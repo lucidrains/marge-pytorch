@@ -1,4 +1,4 @@
-# Marge - Pre-training via Paraphrasing
+## Marge - Pre-training via Paraphrasing
 
 Implementation of <a href="https://arxiv.org/abs/2006.15020">Marge</a>, Pre-training via Paraphrasing, in Pytorch
 
