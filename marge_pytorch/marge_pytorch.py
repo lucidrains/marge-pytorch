@@ -182,6 +182,8 @@ class Marge(nn.Module):
         doc_embeds = rearrange(doc_embeds, '(b m) d -> b m d', m = num_docs)
 
         evidence_encodings = encodings[:, :-1]
+
+        doc_embeds = F.normalize(doc_embeds, dim=-1)
         evidence_embeds, target_embeds = doc_embeds[:, :-1], doc_embeds [:, -1]
         similarities = einsum('bmd,bd->bm', evidence_embeds, target_embeds)
 
