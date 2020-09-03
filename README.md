@@ -57,8 +57,8 @@ trainer = TrainingWrapper(
     doc_seq_len = SEQ_LEN,
     num_evidence = 4,
     reindex_batch_size = 32,
-    documents_memmap_path = './path/to/train.dat',
-    masks_memmap_path = './path/to/train.mask.dat'
+    documents_memmap_path = './train.dat',
+    masks_memmap_path = './train.mask.dat'
 )
 
 # instantiate dataloader
@@ -75,6 +75,29 @@ for ind, ids in enumerate(dl):
     # reindex and precompute knn every 10000 steps, as in paper
     if ind % 10000 == 0:
         trainer.reindex()
+```
+
+After much training
+
+```python
+# some random evidence from the dataset
+*_, evidences, _ = trainer.dataset[0:1]
+
+# assume 1 is start token
+prime = torch.tensor([[1.]]).long().cuda()
+
+# supply your own document similarities array (b x num_evidences)
+# if not supplied, will default to 1. for all evidence
+doc_similarities = torch.ones(evidences.shape[:2]).float().cuda()
+
+# generate sample of length 1024
+samples = model.generate(prime, 1024, evidences, similarities = doc_similarities)
+```
+
+Save your model of course
+
+```python
+torch.save(model, f'./trained-model.pt')
 ```
 
 ## Citations

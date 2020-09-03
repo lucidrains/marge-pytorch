@@ -112,10 +112,10 @@ class CrossAttention(nn.Module):
 
         if any(map(exists, (mask, context_mask))):
             if not exists(mask):
-                mask = torch.tensor((b, n), True, device=device)
+                mask = torch.full((b, n), True, dtype=torch.bool, device=device)
 
             if not exists(context_mask):
-                context_mask = torch.tensor((b, context_len), True, device=device)
+                context_mask = torch.full(context.shape[:2], True, dtype=torch.bool, device=device)
 
             cross_mask = mask[:, None, :, None] * context_mask[:, None, None, :]
             dots.masked_fill_(~cross_mask, float('-inf'))
@@ -190,7 +190,7 @@ class Decoder(nn.Module):
                 Residual(PreNorm(dim, FeedForward(dim, mult = ff_mult)))
             ]))
 
-    def forward(self, x, context, doc_similarities, src_mask = None, context_mask = None):
+    def forward(self, x, *, context, similarities, src_mask = None, context_mask = None):
         for self_attn, self_ff in self.decoder_head:
             x = self_attn(x, mask = src_mask)
             x = self_ff(x)
@@ -198,7 +198,7 @@ class Decoder(nn.Module):
         for self_attn, self_ff, cross_attn, cross_ff in self.decoder_tail:
             x = self_attn(x, mask = src_mask)
             x = self_ff(x)
-            x = cross_attn(x, context, doc_similarities, mask = src_mask, context_mask = context_mask)
+            x = cross_attn(x, context, similarities, mask = src_mask, context_mask = context_mask)
             x = cross_ff(x)
 
         return x
@@ -241,6 +241,19 @@ class Marge(nn.Module):
         self.encoder = TransformerWrapper(num_tokens, dim, max_seq_len, Encoder(dim, depth = enc_depth, heads = enc_heads, ff_mult = enc_ff_mult))
         self.decoder = AutoregressiveWrapper(TransformerWrapper(num_tokens, dim, max_seq_len, Decoder(dim, depth = dec_depth, heads = dec_heads, ff_mult = dec_ff_mult), return_logits = True))
 
+    @torch.no_grad()
+    def generate(self, prime, seq_len, evidence, mask = None, similarities = None):
+        b, num_evidences, *_ = evidence.shape
+        evidence = rearrange(evidence, 'b m n -> (b m) n')
+        enc_src_mask = rearrange(mask, 'b m n -> (b m) n') if exists(mask) else None
+
+        encodings, evidence_embeds = self.encoder(evidence, src_mask = enc_src_mask)
+        encodings = rearrange(encodings, '(b m) n d -> b m n d', m = num_evidences)
+
+        similarities = similarities if exists(similarities) else torch.ones((b, num_evidences)).float().cuda()
+        dec_src_mask = F.pad(mask, (1, 0), value = True) if exists(mask) else None
+        return self.decoder.generate(prime, seq_len, context = encodings, similarities = similarities, context_mask = dec_src_mask)
+
     def get_embeds(self, documents, batch_size = 16, masks = None):
         embeds = []
 
@@ -265,7 +278,7 @@ class Marge(nn.Module):
 
         similarities = einsum('bmd,bd->bm', evidence_embeds, target_embeds)
         dec_src_mask = F.pad(src_mask, (1, 0), value = True)
-        return self.decoder(target, encodings, similarities, src_mask = tgt_mask[:,:-1], context_mask = dec_src_mask)
+        return self.decoder(target, context = encodings, similarities = similarities, src_mask = tgt_mask[:,:-1], context_mask = dec_src_mask)
 
 # training related classes
 
@@ -295,7 +308,6 @@ class DocumentDataset(Dataset):
         evidence_ids = self.knn[ind, :]
         evidence_data = torch.from_numpy(self.documents[evidence_ids, :]).long()
         evidence_masks = torch.from_numpy(self.masks[evidence_ids, :]) if exists(self.masks) else torch.ones_like(evidence_data).bool()
-
         return target_data.cuda(), target_masks.cuda(), evidence_data.cuda(), evidence_masks.cuda()
 
 def remove_target_from_evidence(evidence_ids, target_ids):
@@ -365,7 +377,6 @@ class TrainingWrapper(nn.Module):
             np_data = torch.from_numpy(doc_pointer[data_slice, :]).cuda().long()
             embeds = self.model.get_embeds(np_data, batch_size = batch_size)
             self.index.add(embeds.detach().cpu().numpy())
-
 
         knn_writer = np.memmap(self.knn_path, dtype=np.int32, shape=(self.num_docs, self.num_evidence), mode='w+')
 

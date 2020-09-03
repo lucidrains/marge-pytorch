@@ -47,7 +47,7 @@ class AutoregressiveWrapper(nn.Module):
 
         self.net.eval()
         out = start_tokens
-        input_mask = kwargs.pop('input_mask', None)
+        input_mask = kwargs.pop('src_mask', None)
 
         if input_mask is None:
             input_mask = torch.full_like(out, True, dtype=torch.bool, device=out.device)
@@ -55,7 +55,7 @@ class AutoregressiveWrapper(nn.Module):
         for _ in range(seq_len):
             x = out[:, -self.max_seq_len:]
             input_mask = input_mask[:, -self.max_seq_len:]
-            logits, _ = self.net(x, input_mask=input_mask, **kwargs)
+            logits = self.net(x, src_mask=input_mask, **kwargs)
             logits = logits[:, -1, :]
             filtered_logits = filter_logits_fn(logits, thres = filter_thres)
             gumbel_noise = -torch.log(-torch.log(torch.zeros_like(filtered_logits).uniform_(0, 1) + 1e-9) + 1e-9)
