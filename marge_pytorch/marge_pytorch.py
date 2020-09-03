@@ -311,7 +311,7 @@ class TrainingWrapper(nn.Module):
             self.index = faiss.index_cpu_to_all_gpus(self.index)
 
         embeds = self.model.get_embeds(self.documents, masks = self.masks)
-        self.index.add(embeds.numpy())
+        self.index.add(embeds.detach().cpu().numpy())
 
     def fetch_documents(self, ids):
         docs = self.documents[ids]
@@ -321,7 +321,7 @@ class TrainingWrapper(nn.Module):
     def forward(self, target_ids):
         targets, target_masks = self.fetch_documents(target_ids)
         target_embeds = self.model.get_embeds(targets, masks = target_masks)
-        _, evidence_ids = self.index.search(target_embeds.detach().numpy(), k = self.num_evidence + 1)
+        _, evidence_ids = self.index.search(target_embeds.detach().cpu().numpy(), k = self.num_evidence + 1)
         evidence_ids = torch.tensor(evidence_ids).long()
         evidence_ids = remove_target_from_evidence(evidence_ids, target_ids)
         evidences, evidence_masks = self.fetch_documents(evidence_ids)
