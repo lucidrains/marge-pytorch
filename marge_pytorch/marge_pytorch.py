@@ -115,11 +115,12 @@ class Encoder(nn.Module):
         x = torch.cat((cls_token, x), dim=1)
 
         x_head = self.encoder_head(x)
+        cls_tokens = x_head[:, 0]
 
         if fetch_document_embed:
-            return x_head[:, 0]
+            return cls_tokens
 
-        return self.encoder_tail(x), x_head[:, 0]
+        return self.encoder_tail(x), cls_tokens
 
 class Decoder(nn.Module):
     def __init__(self, dim, depth, head_depth = 4, heads = 8):
