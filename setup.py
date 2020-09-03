@@ -18,6 +18,7 @@ setup(
   install_requires=[
     'einops',
     'faiss-gpu',
+    'numpy',
     'torch==1.6',
     'tqdm'
   ],

@@ -14,13 +14,22 @@ $ pip install marge-pytorch
 
 ```python
 import torch
+import numpy as np
 from torch.utils.data import DataLoader
+
 from marge_pytorch import Marge, TrainingWrapper
 
-# your documents have already been tokenized
+# your documents must be tokenized and stored as memmap  in the shape (num documents, seq length)
 
-documents = torch.randint(0, 20000, (10000, 1024))
-masks = torch.ones_like(documents).bool()
+# generate mock training data
+f = np.memmap('./train.dat', dtype=np.int32, mode='w+', shape=(10000, 1024))
+f[:, :] = np.random.rand(20, 1024)
+del f
+
+# generate mock masking data
+f = np.memmap('./train.mask.dat', dtype=np.bool, mode='w+', shape=(10000, 1024))
+f[:, :] = np.full((20, 1024), True)
+del f
 
 # instantiate model
 
@@ -38,7 +47,15 @@ model = Marge(
 
 # wrap your model and your documents
 
-trainer = TrainingWrapper(model, documents, masks = masks)
+trainer = TrainingWrapper(
+    model,
+    num_documents = 20,
+    doc_seq_len = 1024,
+    num_evidence = 4,
+    reindex_batch_size = 32,
+    documents_memmap_path = './train.dat',
+    masks_memmap_path = './train.mask.dat'
+)
 
 # instantiate dataloader
 

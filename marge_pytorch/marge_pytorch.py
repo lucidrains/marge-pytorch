@@ -1,9 +1,10 @@
 import faiss
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 from torch import nn, einsum
 import torch.nn.functional as F
 
+import numpy as np
 from einops import rearrange
 
 from marge_pytorch.autoregressive_wrapper import AutoregressiveWrapper
@@ -269,68 +270,123 @@ class Marge(nn.Module):
 # training related classes
 
 class DocumentDataset(Dataset):
-    def __init__(self, documents):
+    def __init__(self, num_docs, doc_seq_len, num_evidences, documents_path, masks_path):
         super().__init__()
-        self.documents = documents
+        self.shape = (num_docs, doc_seq_len)
+        self.knn_shape = (num_docs, num_evidences)
+        self.documents = np.memmap(documents_path, dtype=np.int32, shape=self.shape)
+        self.masks = np.memmap(masks_path, dtype=np.bool, shape=self.shape) if exists(masks_path) else None
+        self.knn = None
+
+    def set_knn_path(self, path):
+        if exists(self.knn):
+            del self.knn
+        self.knn = np.memmap(path, dtype=np.int32, shape=self.knn_shape)
 
     def __len__(self):
-        return len(self.documents)
+        return self.shape[0]
 
     def __getitem__(self, ind):
-        return torch.tensor(ind).long()
+        assert exists(self.knn), 'The memmap path to the generated k nearest neighbors for evidences must be set for the dataset'
+
+        target_data = torch.from_numpy(self.documents[ind, :]).long()
+        target_masks = torch.from_numpy(self.masks[ind, :]) if exists(self.masks) else torch.ones_like(target_data).bool()
+
+        evidence_ids = self.knn[ind, :]
+        evidence_data = torch.from_numpy(self.documents[evidence_ids, :]).long()
+        evidence_masks = torch.from_numpy(self.masks[evidence_ids, :]) if exists(self.masks) else torch.ones_like(evidence_data).bool()
+
+        return target_data.cuda(), target_masks.cuda(), evidence_data.cuda(), evidence_masks.cuda()
 
 def remove_target_from_evidence(evidence_ids, target_ids):
     b, n = evidence_ids.shape
 
     match_mask = evidence_ids == target_ids[:, None]
-    rows_without_matches = (match_mask.sum(dim=-1) == 0)[:, None]
-    remove_mask = torch.cat((torch.zeros(b, n - 1).bool(), rows_without_matches), dim=1)
+    rows_without_matches = (match_mask.sum(axis=-1) == 0)[:, None]
+    remove_mask = np.concatenate((np.full((b, n - 1), False), rows_without_matches), axis=1)
 
     mask = match_mask + remove_mask
-    filtered_ids = evidence_ids.masked_select(~mask)
+    filtered_ids = evidence_ids[~mask]
     return filtered_ids.reshape(b, n - 1)
 
 class TrainingWrapper(nn.Module):
-    def __init__(self, model, documents, masks = None, num_evidence = 4):
+    def __init__(
+        self,
+        model,
+        *,
+        num_documents,
+        doc_seq_len,
+        documents_memmap_path,
+        masks_memmap_path = None,
+        num_evidence = 4,
+        reindex_batch_size = 4
+    ):
         super().__init__()
         self.dim = model.dim
         self.num_evidence = num_evidence
 
-        self.model = model
-        self.documents = documents
-        self.masks = masks
+        self.model = model.cuda()
+        self.num_docs = num_documents
+        self.doc_shape = (num_documents, doc_seq_len)
+        self.documents_path = documents_memmap_path
+        self.knn_path = f'{self.documents_path}.knn'
 
         self.index = None
+        self.reindex_batch_size = reindex_batch_size
         self.reindex()
 
-        self.dataset = DocumentDataset(documents)
+        self.dataset = DocumentDataset(
+            num_documents,
+            doc_seq_len,
+            num_evidence,
+            documents_memmap_path,
+            masks_memmap_path
+        )
+
+        self.dataset.set_knn_path(self.knn_path)
 
     def get_dataset(self):
         return self.dataset
 
     @torch.no_grad()
     def reindex(self):
+        batch_size = self.reindex_batch_size
+
         if exists(self.index):
             self.index.reset()
         else:
             self.index = faiss.IndexFlatL2(self.dim)
             self.index = faiss.index_cpu_to_all_gpus(self.index)
 
-        embeds = self.model.get_embeds(self.documents, masks = self.masks)
-        self.index.add(embeds.detach().cpu().numpy())
+        doc_pointer = np.memmap(self.documents_path, dtype=np.int32, shape=self.doc_shape)
 
-    def fetch_documents(self, ids):
-        docs = self.documents[ids]
-        masks = self.masks[ids] if exists(self.masks) else None
-        return docs, masks
+        for ind in range(0, self.num_docs, batch_size):
+            data_slice = slice(ind, min(ind + batch_size, self.num_docs))
+            np_data = torch.from_numpy(doc_pointer[data_slice, :]).cuda().long()
+            embeds = self.model.get_embeds(np_data, batch_size = batch_size)
+            self.index.add(embeds.detach().cpu().numpy())
 
-    def forward(self, target_ids):
-        targets, target_masks = self.fetch_documents(target_ids)
+
+        knn_writer = np.memmap(self.knn_path, dtype=np.int32, shape=(self.num_docs, self.num_evidence), mode='w+')
+
+        for ind in range(0, self.num_docs, batch_size):
+            lo, hi = ind, min(ind + batch_size, self.num_docs)
+            data_slice = slice(lo, hi)
+            np_data = torch.from_numpy(doc_pointer[data_slice, :]).cuda().long()
+
+            embeds = self.model.get_embeds(np_data, batch_size = batch_size)
+            _, evidence_ids = self.index.search(embeds.detach().cpu().numpy(), k = self.num_evidence + 1)
+
+            target_ids = np.arange(lo, hi)
+            evidence_ids = remove_target_from_evidence(evidence_ids, target_ids)
+
+            knn_writer[data_slice, :] = evidence_ids
+
+        del doc_pointer
+        del knn_writer
+
+    def forward(self, data):
+        targets, target_masks, evidences, evidence_masks = data
         target_embeds = self.model.get_embeds(targets, masks = target_masks)
-        _, evidence_ids = self.index.search(target_embeds.detach().cpu().numpy(), k = self.num_evidence + 1)
-        evidence_ids = torch.tensor(evidence_ids).long()
-        evidence_ids = remove_target_from_evidence(evidence_ids, target_ids)
-        evidences, evidence_masks = self.fetch_documents(evidence_ids)
-
         loss = self.model(evidences, targets, target_embeds, src_mask = evidence_masks, tgt_mask = target_masks)
         return loss
