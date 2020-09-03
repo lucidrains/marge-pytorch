@@ -18,6 +18,7 @@ from marge_pytorch import Marge, TrainingWrapper
 # your documents have already been tokenized
 
 documents = torch.randint(0, 20000, (10000, 1024))
+masks = torch.ones_like(documents).bool()
 
 # instantiate model
 
@@ -35,7 +36,7 @@ model = Marge(
 
 # wrap your model and your documents
 
-trainer = TrainingWrapper(model, documents)
+trainer = TrainingWrapper(model, documents, masks = masks)
 
 # instantiate dataloader
 

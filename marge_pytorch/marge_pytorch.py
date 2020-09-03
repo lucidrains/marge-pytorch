@@ -13,6 +13,9 @@ from marge_pytorch.autoregressive_wrapper import AutoregressiveWrapper
 def identity(x, *args, **kwargs):
     return x
 
+def exists(x):
+    return x is not None
+
 # helper classes
 
 class PreNorm(nn.Module):
@@ -53,15 +56,21 @@ class SelfAttention(nn.Module):
         self.to_qkv = nn.Linear(dim, dim * 3, bias = False)
         self.to_out = nn.Linear(dim, dim)
 
-    def forward(self, x):
+    def forward(self, x, mask = None):
         _, n, _, h, device = *x.shape, self.heads, x.device
         qkv = self.to_qkv(x)
         q, k, v = rearrange(qkv, 'b n (qkv h d) -> qkv b h n d', h = h, qkv = 3)
         dots = einsum('bhid,bhjd->bhij', q, k) * self.scale
 
+        if exists(mask):
+            mask = mask[:, None, :, None] * mask[:, None, None, :]
+            dots.masked_fill_(~mask, float('-inf'))
+            del mask
+
         if self.causal:
-            mask = torch.ones(n, n, device=device).triu_(1).bool()
-            dots.masked_fill_(mask, float('-inf'))
+            causal_mask = torch.ones(n, n, device=device).triu_(1).bool()
+            dots.masked_fill_(causal_mask, float('-inf'))
+            del causal_mask
 
         attn = dots.softmax(dim=-1)
         out = einsum('bhij,bhjd->bhid', attn, v)
@@ -80,7 +89,7 @@ class CrossAttention(nn.Module):
         self.beta = nn.Parameter(torch.tensor(1.), requires_grad=True)
         self.to_out = nn.Linear(dim, dim)
 
-    def forward(self, x, context, doc_similarities):
+    def forward(self, x, context, doc_similarities, mask = None, context_mask = None):
         _, n, _, h, device = *x.shape, self.heads, x.device
 
         q = self.to_q(x)
@@ -88,6 +97,7 @@ class CrossAttention(nn.Module):
 
         context_len = context.shape[2]
         context = rearrange(context, 'b m n d -> b (m n) d')
+        context_mask = rearrange(context_mask, 'b m n -> b (m n)') if exists(context_mask) else None
 
         doc_similarities = doc_similarities.unsqueeze(-1).expand(-1, -1, context_len)
         doc_similarities = rearrange(doc_similarities, 'b m n -> b (m n)')
@@ -98,6 +108,11 @@ class CrossAttention(nn.Module):
 
         dots = einsum('bhid,bhjd->bhij', q, k) * self.scale
         dots = dots + doc_similarities
+
+        if any(map(exists, (mask, context_mask))):
+            cross_mask = mask[:, None, :, None] * context_mask[:, None, None, :]
+            dots.masked_fill_(~cross_mask, float('-inf'))
+            del cross_mask
 
         attn = dots.softmax(dim=-1)
         out = einsum('bhij,bhjd->bhid', attn, v)
@@ -110,51 +125,74 @@ class Encoder(nn.Module):
         super().__init__()
         assert depth > retrieval_encoder_depth, f'Depth must be at least the depth set for the retrieval encoder ({retrieval_encoder_depth})'
 
-        block = lambda: nn.Sequential(
+        block = lambda: nn.ModuleList([
             Residual(PreNorm(dim, SelfAttention(dim))),
             Residual(PreNorm(dim, FeedForward(dim, mult = ff_mult)))
-        )
+        ])
 
         self.cls = nn.Parameter(torch.zeros(1, 1, dim), requires_grad=True)
-        self.encoder_head = nn.Sequential(*[block() for _ in range(retrieval_encoder_depth)])
-        self.encoder_tail = nn.Sequential(*[block() for _ in range(depth - retrieval_encoder_depth)])
+        self.encoder_head = nn.ModuleList([])
+        self.encoder_tail = nn.ModuleList([])
 
-    def forward(self, x, return_embed_only = False):
+        for _ in range(retrieval_encoder_depth):
+            self.encoder_head.append(block())
+
+        for _ in range(depth - retrieval_encoder_depth):
+            self.encoder_tail.append(block())
+
+    def forward(self, x, src_mask = None, return_embed_only = False):
         b, _, _ = x.shape
+
+        # append cls token
         cls_token = self.cls.expand(b, -1, -1)
         x = torch.cat((cls_token, x), dim=1)
+        src_mask = F.pad(src_mask, (1, 0), value=True) if src_mask is not None else None
 
-        x = self.encoder_head(x)
+        for attn, ff in self.encoder_head:
+            x = attn(x, mask = src_mask)
+            x = ff(x)
+
         cls_tokens = x[:, 0]
 
         if return_embed_only:
             return cls_tokens
 
-        return self.encoder_tail(x), cls_tokens
+        for attn, ff in self.encoder_tail:
+            x = attn(x, mask = src_mask)
+            x = ff(x)
+
+        return x, cls_tokens
 
 class Decoder(nn.Module):
     def __init__(self, dim, depth, head_depth = 4, heads = 8, ff_mult = 4):
         super().__init__()
-        block = lambda: nn.Sequential(
-            Residual(PreNorm(dim, SelfAttention(dim, causal = True))),
-            Residual(PreNorm(dim, FeedForward(dim))),
-        )
-
-        self.decoder_head = nn.Sequential(*[block() for _ in range(head_depth)])
-
+        self.decoder_head = nn.ModuleList([])
         self.decoder_tail = nn.ModuleList([])
+
+        for _ in range(head_depth):
+            self.decoder_head.append(nn.ModuleList([
+                Residual(PreNorm(dim, SelfAttention(dim, causal = True))),
+                Residual(PreNorm(dim, FeedForward(dim)))
+            ]))
+
         for _ in range(depth - head_depth):
             self.decoder_tail.append(nn.ModuleList([
+                Residual(PreNorm(dim, SelfAttention(dim, causal = True))),
+                Residual(PreNorm(dim, FeedForward(dim))),
                 Residual(PreNorm(dim, CrossAttention(dim))),
                 Residual(PreNorm(dim, FeedForward(dim, mult = ff_mult)))
             ]))
 
-    def forward(self, x, context, doc_similarities):
-        x = self.decoder_head(x)
+    def forward(self, x, context, doc_similarities, src_mask = None, context_mask = None):
+        for self_attn, self_ff in self.decoder_head:
+            x = self_attn(x, mask = src_mask)
+            x = self_ff(x)
 
-        for attn, ff in self.decoder_tail:
-            x = attn(x, context, doc_similarities)
-            x = ff(x)
+        for self_attn, self_ff, cross_attn, cross_ff in self.decoder_tail:
+            x = self_attn(x, mask = src_mask)
+            x = self_ff(x)
+            x = cross_attn(x, context, doc_similarities, mask = src_mask, context_mask = context_mask)
+            x = cross_ff(x)
 
         return x
 
@@ -196,24 +234,31 @@ class Marge(nn.Module):
         self.encoder = TransformerWrapper(num_tokens, dim, max_seq_len, Encoder(dim, depth = enc_depth, heads = enc_heads, ff_mult = enc_ff_mult))
         self.decoder = AutoregressiveWrapper(TransformerWrapper(num_tokens, dim, max_seq_len, Decoder(dim, depth = dec_depth, heads = dec_heads, ff_mult = dec_ff_mult), return_logits = True))
 
-    def get_embeds(self, documents, batch_size = 16):
+    def get_embeds(self, documents, batch_size = 16, masks = None):
         embeds = []
-        for batch in documents.split(batch_size):
-            embed = self.encoder(batch, return_embed_only = True)
+
+        batched_documents = documents.split(batch_size)
+        batched_masks = masks.split(batch_size) if masks is not None else ([None] * len(batched_documents))
+
+        for docs, mask in zip(batched_documents, batched_masks):
+            embed = self.encoder(docs, src_mask = mask, return_embed_only = True)
             embeds.append(embed)
+
         embeds = torch.cat(embeds)
         return F.normalize(embeds, dim=-1)
 
-    def forward(self, evidence, target, target_embeds):
+    def forward(self, evidence, target, target_embeds, src_mask = None, tgt_mask = None):
         num_evidences = evidence.shape[1]
         evidence = rearrange(evidence, 'b m n -> (b m) n')
+        enc_src_mask = rearrange(src_mask, 'b m n -> (b m) n') if src_mask is not None else None
 
-        encodings, evidence_embeds = self.encoder(evidence)
+        encodings, evidence_embeds = self.encoder(evidence, src_mask = enc_src_mask)
         encodings = rearrange(encodings, '(b m) n d -> b m n d', m = num_evidences)
         evidence_embeds = rearrange(evidence_embeds, '(b m) d -> b m d', m = num_evidences)
 
         similarities = einsum('bmd,bd->bm', evidence_embeds, target_embeds)
-        return self.decoder(target, encodings, similarities)
+        dec_src_mask = F.pad(src_mask, (1, 0), value = True)
+        return self.decoder(target, encodings, similarities, src_mask = tgt_mask[:,:-1], context_mask = dec_src_mask)
 
 # training related classes
 
@@ -240,13 +285,14 @@ def remove_target_from_evidence(evidence_ids, target_ids):
     return filtered_ids.reshape(b, n - 1)
 
 class TrainingWrapper(nn.Module):
-    def __init__(self, model, documents, num_evidence = 4):
+    def __init__(self, model, documents, masks = None, num_evidence = 4):
         super().__init__()
         self.dim = model.dim
         self.num_evidence = num_evidence
 
         self.model = model
         self.documents = documents
+        self.masks = masks
 
         self.index = None
         self.reindex()
@@ -258,21 +304,27 @@ class TrainingWrapper(nn.Module):
 
     @torch.no_grad()
     def reindex(self):
-        if self.index is not None:
+        if exists(self.index):
             self.index.reset()
         else:
             self.index = faiss.IndexFlatL2(self.dim)
             self.index = faiss.index_cpu_to_all_gpus(self.index)
 
-        embeds = self.model.get_embeds(self.documents)
+        embeds = self.model.get_embeds(self.documents, masks = self.masks)
         self.index.add(embeds.numpy())
 
+    def fetch_documents(self, ids):
+        docs = self.documents[ids]
+        masks = self.masks[ids] if exists(self.masks) else None
+        return docs, masks
+
     def forward(self, target_ids):
-        targets = self.documents[target_ids]
-        target_embeds = self.model.get_embeds(targets)
+        targets, target_masks = self.fetch_documents(target_ids)
+        target_embeds = self.model.get_embeds(targets, masks = target_masks)
         _, evidence_ids = self.index.search(target_embeds.detach().numpy(), k = self.num_evidence + 1)
         evidence_ids = torch.tensor(evidence_ids).long()
         evidence_ids = remove_target_from_evidence(evidence_ids, target_ids)
-        evidences = self.documents[evidence_ids]
-        loss = self.model(evidences, targets, target_embeds)
+        evidences, evidence_masks = self.fetch_documents(evidence_ids)
+
+        loss = self.model(evidences, targets, target_embeds, src_mask = evidence_masks, tgt_mask = target_masks)
         return loss
