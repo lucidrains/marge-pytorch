@@ -16,9 +16,10 @@ setup(
     'pre-training'
   ],
   install_requires=[
-    'torch==1.6',
     'einops',
-    'faiss-gpu'
+    'faiss-gpu',
+    'torch==1.6',
+    'tqdm'
   ],
   classifiers=[
     'Development Status :: 4 - Beta',

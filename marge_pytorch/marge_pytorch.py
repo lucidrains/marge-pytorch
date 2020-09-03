@@ -43,7 +43,7 @@ class FeedForward(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-class Attention(nn.Module):
+class SelfAttention(nn.Module):
     def __init__(self, dim, heads = 8, causal = True):
         super().__init__()
         self.scale = dim ** -0.5
@@ -92,7 +92,6 @@ class CrossAttention(nn.Module):
         doc_similarities = rearrange(doc_similarities, 'b m n -> b (m n)')
         doc_similarities = doc_similarities[:, None, None, :] * self.beta
 
-
         kv = self.to_kv(context)
         k, v = rearrange(kv, 'b n (kv h d) -> kv b h n d', h = h, kv = 2)
 
@@ -111,7 +110,7 @@ class Encoder(nn.Module):
         assert depth > retrieval_encoder_depth, f'Depth must be at least the depth set for the retrieval encoder ({retrieval_encoder_depth})'
 
         block = lambda: nn.Sequential(
-            Residual(PreNorm(dim, Attention(dim))),
+            Residual(PreNorm(dim, SelfAttention(dim))),
             Residual(PreNorm(dim, FeedForward(dim)))
         )
 
@@ -136,7 +135,7 @@ class Decoder(nn.Module):
     def __init__(self, dim, depth, head_depth = 4, heads = 8):
         super().__init__()
         block = lambda: nn.Sequential(
-            Residual(PreNorm(dim, Attention(dim, causal = True))),
+            Residual(PreNorm(dim, SelfAttention(dim, causal = True))),
             Residual(PreNorm(dim, FeedForward(dim))),
         )
 
@@ -150,7 +149,7 @@ class Decoder(nn.Module):
             ]))
 
     def forward(self, x, context, doc_similarities):
-        x_head = self.decoder_head(x)
+        x = self.decoder_head(x)
 
         for attn, ff in self.decoder_tail:
             x = attn(x, context, doc_similarities)
