@@ -77,10 +77,19 @@ for ind, ids in enumerate(dl):
         trainer.reindex()
 ```
 
-After much training
+Save your model after much training
+
+```python
+torch.save(model, f'./trained-model.pt')
+```
+
+## Sampling
+
+You can sample from the decoder with the following instructoins
 
 ```python
 # some random evidence from the dataset
+# or provide your own in the dimensions (b x num_evidences x seq_len)
 *_, evidences, _ = trainer.dataset[0:1]
 
 # assume 1 is start token
@@ -92,12 +101,6 @@ doc_similarities = torch.ones(evidences.shape[:2]).float().cuda()
 
 # generate sample of length 1024
 samples = model.generate(prime, 1024, evidences, similarities = doc_similarities)
-```
-
-Save your model of course
-
-```python
-torch.save(model, f'./trained-model.pt')
 ```
 
 ## Citations
