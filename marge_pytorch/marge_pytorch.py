@@ -1,5 +1,6 @@
-import torch
 import faiss
+import torch
+from torch.utils.data import Dataset
 from torch import nn, einsum
 import torch.nn.functional as F
 
@@ -76,7 +77,7 @@ class CrossAttention(nn.Module):
 
         self.to_q = nn.Linear(dim, dim, bias = False)
         self.to_kv = nn.Linear(dim, dim * 2, bias = False)
-        self.beta = nn.Parameter(torch.tensor(1.))
+        self.beta = nn.Parameter(torch.tensor(1.), requires_grad=True)
         self.to_out = nn.Linear(dim, dim)
 
     def forward(self, x, context, doc_similarities):
@@ -114,7 +115,7 @@ class Encoder(nn.Module):
             Residual(PreNorm(dim, FeedForward(dim)))
         )
 
-        self.cls = nn.Parameter(torch.zeros(1, 1, dim))
+        self.cls = nn.Parameter(torch.zeros(1, 1, dim), requires_grad=True)
         self.encoder_head = nn.Sequential(*[block() for _ in range(retrieval_encoder_depth)])
         self.encoder_tail = nn.Sequential(*[block() for _ in range(depth - retrieval_encoder_depth)])
 
@@ -123,8 +124,8 @@ class Encoder(nn.Module):
         cls_token = self.cls.expand(b, -1, -1)
         x = torch.cat((cls_token, x), dim=1)
 
-        x_head = self.encoder_head(x)
-        cls_tokens = x_head[:, 0]
+        x = self.encoder_head(x)
+        cls_tokens = x[:, 0]
 
         if return_embed_only:
             return cls_tokens
@@ -179,30 +180,88 @@ class TransformerWrapper(nn.Module):
 class Marge(nn.Module):
     def __init__(self, dim, num_tokens = 20000, max_seq_len = 1024, encoder_depth = 12, decoder_depth = 12):
         super().__init__()
+        self.dim = dim
+
         self.encoder = TransformerWrapper(num_tokens, dim, max_seq_len, Encoder(dim, depth = encoder_depth))
         self.decoder = AutoregressiveWrapper(TransformerWrapper(num_tokens, dim, max_seq_len, Decoder(dim, depth = decoder_depth), return_logits = True))
 
-    @torch.no_grad()
     def get_embeds(self, documents, batch_size = 16):
         embeds = []
         for batch in documents.split(batch_size):
             embed = self.encoder(batch, return_embed_only = True)
             embeds.append(embed)
-        return torch.cat(embeds)
+        embeds = torch.cat(embeds)
+        return F.normalize(embeds, dim=-1)
 
-    def forward(self, evidence, target):
-        all_docs = torch.cat((evidence, target.unsqueeze(1)), dim=1)
-        num_docs = all_docs.shape[1]
-        all_docs = rearrange(all_docs, 'b m n -> (b m) n')
+    def forward(self, evidence, target, target_embeds):
+        num_evidences = evidence.shape[1]
+        evidence = rearrange(evidence, 'b m n -> (b m) n')
 
-        encodings, doc_embeds = self.encoder(all_docs)
-        encodings = rearrange(encodings, '(b m) n d -> b m n d', m = num_docs)
-        doc_embeds = rearrange(doc_embeds, '(b m) d -> b m d', m = num_docs)
+        encodings, evidence_embeds = self.encoder(evidence)
+        encodings = rearrange(encodings, '(b m) n d -> b m n d', m = num_evidences)
+        evidence_embeds = rearrange(evidence_embeds, '(b m) d -> b m d', m = num_evidences)
 
-        evidence_encodings = encodings[:, :-1]
-
-        doc_embeds = F.normalize(doc_embeds, dim=-1)
-        evidence_embeds, target_embeds = doc_embeds[:, :-1], doc_embeds [:, -1]
         similarities = einsum('bmd,bd->bm', evidence_embeds, target_embeds)
+        return self.decoder(target, encodings, similarities)
 
-        return self.decoder(target, evidence_encodings, similarities)
+# training related classes
+
+class DocumentDataset(Dataset):
+    def __init__(self, documents):
+        super().__init__()
+        self.documents = documents
+
+    def __len__(self):
+        return len(self.documents)
+
+    def __getitem__(self, ind):
+        return torch.tensor(ind).long()
+
+def remove_target_from_evidence(evidence_ids, target_ids):
+    b, n = evidence_ids.shape
+
+    match_mask = evidence_ids == target_ids[:, None]
+    rows_without_matches = (match_mask.sum(dim=-1) == 0)[:, None]
+    remove_mask = torch.cat((torch.zeros(b, n - 1).bool(), rows_without_matches), dim=1)
+
+    mask = match_mask + remove_mask
+    filtered_ids = evidence_ids.masked_select(~mask)
+    return filtered_ids.reshape(b, n - 1)
+
+class TrainingWrapper(nn.Module):
+    def __init__(self, model, documents, num_evidence = 4):
+        super().__init__()
+        self.dim = model.dim
+        self.num_evidence = num_evidence
+
+        self.model = model
+        self.documents = documents
+
+        self.index = None
+        self.reindex()
+
+        self.dataset = DocumentDataset(documents)
+
+    def get_dataset(self):
+        return self.dataset
+
+    @torch.no_grad()
+    def reindex(self):
+        if self.index is not None:
+            self.index.reset()
+        else:
+            self.index = faiss.IndexFlatL2(self.dim)
+            self.index = faiss.index_cpu_to_all_gpus(self.index)
+
+        embeds = self.model.get_embeds(self.documents)
+        self.index.add(embeds.numpy())
+
+    def forward(self, target_ids):
+        targets = self.documents[target_ids]
+        target_embeds = self.model.get_embeds(targets)
+        dists, evidence_ids = self.index.search(target_embeds.detach().numpy(), k = self.num_evidence + 1)
+        evidence_ids = torch.tensor(evidence_ids).long()
+        evidence_ids = remove_target_from_evidence(evidence_ids, target_ids)
+        evidences = self.documents[evidence_ids]
+        loss = self.model(evidences, targets, target_embeds)
+        return loss

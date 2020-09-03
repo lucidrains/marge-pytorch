@@ -2,6 +2,52 @@
 
 Implementation of <a href="https://arxiv.org/abs/2006.15020">Marge</a>, Pre-training via Paraphrasing, in Pytorch
 
+## Install
+
+```bash
+$ pip install marge-pytorch
+```
+
+## Usage
+
+```python
+import torch
+from torch.utils.data import DataLoader
+from marge_pytorch import Marge, TrainingWrapper
+
+# your documents have already been tokenized
+
+documents = torch.randint(0, 20000, (10000, 1024))
+
+# instantiate model
+
+model = Marge(
+    dim = 512,
+    num_tokens = 20000,
+    max_seq_len = 1024,
+    encoder_depth = 12,
+    decoder_depth = 12
+)
+
+# wrap your model and your documents
+
+trainer = TrainingWrapper(model, documents)
+
+# instantiate dataloader
+
+dl = DataLoader(trainer.dataset, batch_size=16)
+
+# now you can train, and use the reindex method on the training wrapper at appropriate intervals
+
+for ind, ids in enumerate(dl):
+    loss = trainer(ids)
+    loss.backward()
+    # optimizer step and all that
+
+    if ind % 10000 == 0:
+        trainer.reindex()
+```
+
 ## Citations
 
 ```bibtex
