@@ -14,6 +14,16 @@ def identity(x, *args, **kwargs):
 
 # helper classes
 
+class PreNorm(nn.Module):
+    def __init__(self, dim, fn):
+        super().__init__()
+        self.norm = nn.LayerNorm(dim)
+        self.fn = fn
+
+    def forward(self, x, *args, **kwargs):
+        x = self.norm(x)
+        return self.fn(x, *args, **kwargs)
+
 class Residual(nn.Module):
     def __init__(self, fn):
         super().__init__()
@@ -101,15 +111,15 @@ class Encoder(nn.Module):
         assert depth > retrieval_encoder_depth, f'Depth must be at least the depth set for the retrieval encoder ({retrieval_encoder_depth})'
 
         block = lambda: nn.Sequential(
-            Residual(Attention(dim)),
-            Residual(FeedForward(dim))
+            Residual(PreNorm(dim, Attention(dim))),
+            Residual(PreNorm(dim, FeedForward(dim)))
         )
 
         self.cls = nn.Parameter(torch.zeros(1, 1, dim))
         self.encoder_head = nn.Sequential(*[block() for _ in range(retrieval_encoder_depth)])
         self.encoder_tail = nn.Sequential(*[block() for _ in range(depth - retrieval_encoder_depth)])
 
-    def forward(self, x, fetch_document_embed = False):
+    def forward(self, x, return_embed_only = False):
         b, _, _ = x.shape
         cls_token = self.cls.expand(b, -1, -1)
         x = torch.cat((cls_token, x), dim=1)
@@ -117,7 +127,7 @@ class Encoder(nn.Module):
         x_head = self.encoder_head(x)
         cls_tokens = x_head[:, 0]
 
-        if fetch_document_embed:
+        if return_embed_only:
             return cls_tokens
 
         return self.encoder_tail(x), cls_tokens
@@ -126,8 +136,8 @@ class Decoder(nn.Module):
     def __init__(self, dim, depth, head_depth = 4, heads = 8):
         super().__init__()
         block = lambda: nn.Sequential(
-            Residual(Attention(dim, causal = True)),
-            Residual(FeedForward(dim)),
+            Residual(PreNorm(dim, Attention(dim, causal = True))),
+            Residual(PreNorm(dim, FeedForward(dim))),
         )
 
         self.decoder_head = nn.Sequential(*[block() for _ in range(head_depth)])
@@ -135,8 +145,8 @@ class Decoder(nn.Module):
         self.decoder_tail = nn.ModuleList([])
         for _ in range(depth - head_depth):
             self.decoder_tail.append(nn.ModuleList([
-                Residual(CrossAttention(dim)),
-                Residual(FeedForward(dim))
+                Residual(PreNorm(dim, CrossAttention(dim))),
+                Residual(PreNorm(dim, FeedForward(dim)))
             ]))
 
     def forward(self, x, context, doc_similarities):
@@ -172,6 +182,14 @@ class Marge(nn.Module):
         super().__init__()
         self.encoder = TransformerWrapper(num_tokens, dim, max_seq_len, Encoder(dim, depth = encoder_depth))
         self.decoder = AutoregressiveWrapper(TransformerWrapper(num_tokens, dim, max_seq_len, Decoder(dim, depth = decoder_depth), return_logits = True))
+
+    @torch.no_grad()
+    def get_embeds(self, documents, batch_size = 16):
+        embeds = []
+        for batch in documents.split(batch_size):
+            embed = self.encoder(batch, return_embed_only = True)
+            embeds.append(embed)
+        return torch.cat(embeds)
 
     def forward(self, evidence, target):
         all_docs = torch.cat((evidence, target.unsqueeze(1)), dim=1)
