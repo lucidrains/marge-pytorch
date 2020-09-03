@@ -25,8 +25,12 @@ model = Marge(
     dim = 512,
     num_tokens = 20000,
     max_seq_len = 1024,
-    encoder_depth = 12,
-    decoder_depth = 12
+    enc_depth = 12,
+    enc_heads = 8,
+    enc_ff_mult = 4,
+    dec_depth = 12,
+    dec_heads = 8,
+    dec_ff_mult = 16
 )
 
 # wrap your model and your documents

@@ -106,13 +106,13 @@ class CrossAttention(nn.Module):
         return out
 
 class Encoder(nn.Module):
-    def __init__(self, dim, depth, retrieval_encoder_depth = 4, heads = 8):
+    def __init__(self, dim, depth, retrieval_encoder_depth = 4, heads = 8, ff_mult = 4):
         super().__init__()
         assert depth > retrieval_encoder_depth, f'Depth must be at least the depth set for the retrieval encoder ({retrieval_encoder_depth})'
 
         block = lambda: nn.Sequential(
             Residual(PreNorm(dim, SelfAttention(dim))),
-            Residual(PreNorm(dim, FeedForward(dim)))
+            Residual(PreNorm(dim, FeedForward(dim, mult = ff_mult)))
         )
 
         self.cls = nn.Parameter(torch.zeros(1, 1, dim), requires_grad=True)
@@ -133,7 +133,7 @@ class Encoder(nn.Module):
         return self.encoder_tail(x), cls_tokens
 
 class Decoder(nn.Module):
-    def __init__(self, dim, depth, head_depth = 4, heads = 8):
+    def __init__(self, dim, depth, head_depth = 4, heads = 8, ff_mult = 4):
         super().__init__()
         block = lambda: nn.Sequential(
             Residual(PreNorm(dim, SelfAttention(dim, causal = True))),
@@ -146,7 +146,7 @@ class Decoder(nn.Module):
         for _ in range(depth - head_depth):
             self.decoder_tail.append(nn.ModuleList([
                 Residual(PreNorm(dim, CrossAttention(dim))),
-                Residual(PreNorm(dim, FeedForward(dim)))
+                Residual(PreNorm(dim, FeedForward(dim, mult = ff_mult)))
             ]))
 
     def forward(self, x, context, doc_similarities):
@@ -178,12 +178,23 @@ class TransformerWrapper(nn.Module):
         return self.to_logits(x)
 
 class Marge(nn.Module):
-    def __init__(self, dim, num_tokens = 20000, max_seq_len = 1024, encoder_depth = 12, decoder_depth = 12):
+    def __init__(
+        self,
+        dim,
+        num_tokens = 20000,
+        max_seq_len = 1024,
+        enc_depth = 12,
+        enc_heads = 8,
+        enc_ff_mult = 4,
+        dec_depth = 12,
+        dec_heads = 8,
+        dec_ff_mult = 16
+    ):
         super().__init__()
         self.dim = dim
 
-        self.encoder = TransformerWrapper(num_tokens, dim, max_seq_len, Encoder(dim, depth = encoder_depth))
-        self.decoder = AutoregressiveWrapper(TransformerWrapper(num_tokens, dim, max_seq_len, Decoder(dim, depth = decoder_depth), return_logits = True))
+        self.encoder = TransformerWrapper(num_tokens, dim, max_seq_len, Encoder(dim, depth = enc_depth, heads = enc_heads, ff_mult = enc_ff_mult))
+        self.decoder = AutoregressiveWrapper(TransformerWrapper(num_tokens, dim, max_seq_len, Decoder(dim, depth = dec_depth, heads = dec_heads, ff_mult = dec_ff_mult), return_logits = True))
 
     def get_embeds(self, documents, batch_size = 16):
         embeds = []
@@ -259,7 +270,7 @@ class TrainingWrapper(nn.Module):
     def forward(self, target_ids):
         targets = self.documents[target_ids]
         target_embeds = self.model.get_embeds(targets)
-        dists, evidence_ids = self.index.search(target_embeds.detach().numpy(), k = self.num_evidence + 1)
+        _, evidence_ids = self.index.search(target_embeds.detach().numpy(), k = self.num_evidence + 1)
         evidence_ids = torch.tensor(evidence_ids).long()
         evidence_ids = remove_target_from_evidence(evidence_ids, target_ids)
         evidences = self.documents[evidence_ids]
