@@ -90,7 +90,7 @@ class CrossAttention(nn.Module):
         self.to_out = nn.Linear(dim, dim)
 
     def forward(self, x, context, doc_similarities, mask = None, context_mask = None):
-        _, n, _, h, device = *x.shape, self.heads, x.device
+        b, n, _, h, device = *x.shape, self.heads, x.device
 
         q = self.to_q(x)
         q = rearrange(q, 'b n (h d) -> b h n d', h = h)
@@ -110,6 +110,12 @@ class CrossAttention(nn.Module):
         dots = dots + doc_similarities
 
         if any(map(exists, (mask, context_mask))):
+            if not exists(mask):
+                mask = torch.tensor((b, n), True, device=device)
+
+            if not exists(context_mask):
+                context_mask = torch.tensor((b, context_len), True, device=device)
+
             cross_mask = mask[:, None, :, None] * context_mask[:, None, None, :]
             dots.masked_fill_(~cross_mask, float('-inf'))
             del cross_mask
