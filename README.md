@@ -19,16 +19,20 @@ from torch.utils.data import DataLoader
 
 from marge_pytorch import Marge, TrainingWrapper
 
-# your documents must be tokenized and stored as memmap  in the shape (num documents, seq length)
+# your documents must be tokenized and stored as memmap in the shape (num documents, seq length)
+
+# mock constants
+NUM_DOCS = 10000
+SEQ_LEN = 1024
 
 # generate mock training data
-f = np.memmap('./train.dat', dtype=np.int32, mode='w+', shape=(10000, 1024))
-f[:, :] = np.random.rand(20, 1024)
+f = np.memmap('./train.dat', dtype=np.int32, mode='w+', shape=(NUM_DOCS, SEQ_LEN))
+f[:, :] = np.random.rand(NUM_DOCS, SEQ_LEN)
 del f
 
 # generate mock masking data
-f = np.memmap('./train.mask.dat', dtype=np.bool, mode='w+', shape=(10000, 1024))
-f[:, :] = np.full((20, 1024), True)
+f = np.memmap('./train.mask.dat', dtype=np.bool, mode='w+', shape=(NUM_DOCS, SEQ_LEN))
+f[:, :] = np.full((NUM_DOCS, SEQ_LEN), True)
 del f
 
 # instantiate model
@@ -36,7 +40,7 @@ del f
 model = Marge(
     dim = 512,
     num_tokens = 20000,
-    max_seq_len = 1024,
+    max_seq_len = SEQ_LEN,
     enc_depth = 12,
     enc_heads = 8,
     enc_ff_mult = 4,
@@ -49,12 +53,12 @@ model = Marge(
 
 trainer = TrainingWrapper(
     model,
-    num_documents = 20,
-    doc_seq_len = 1024,
+    num_documents = NUM_DOCS,
+    doc_seq_len = SEQ_LEN,
     num_evidence = 4,
     reindex_batch_size = 32,
-    documents_memmap_path = './train.dat',
-    masks_memmap_path = './train.mask.dat'
+    documents_memmap_path = './path/to/train.dat',
+    masks_memmap_path = './path/to/train.mask.dat'
 )
 
 # instantiate dataloader
@@ -68,6 +72,7 @@ for ind, ids in enumerate(dl):
     loss.backward()
     # optimizer step and all that
 
+    # reindex and precompute knn every 10000 steps, as in paper
     if ind % 10000 == 0:
         trainer.reindex()
 ```
