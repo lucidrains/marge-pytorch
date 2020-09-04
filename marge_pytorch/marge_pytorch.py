@@ -260,8 +260,8 @@ class Marge(nn.Module):
         encodings = rearrange(encodings, '(b m) n d -> b m n d', m = num_evidences)
 
         similarities = similarities if exists(similarities) else torch.ones((b, num_evidences)).float().cuda()
-        dec_src_mask = F.pad(mask, (1, 0), value = True) if exists(mask) else None
-        return self.decoder.generate(prime, seq_len, context = encodings, similarities = similarities, context_mask = dec_src_mask)
+        context_mask = F.pad(mask, (1, 0), value = True) if exists(mask) else None
+        return self.decoder.generate(prime, seq_len, context = encodings, similarities = similarities, context_mask = context_mask)
 
     def get_embeds(self, documents, batch_size = 16, masks = None):
         embeds = []
@@ -279,15 +279,15 @@ class Marge(nn.Module):
     def forward(self, evidence, target, target_embeds, src_mask = None, tgt_mask = None):
         num_evidences = evidence.shape[1]
         evidence = rearrange(evidence, 'b m n -> (b m) n')
-        enc_src_mask = rearrange(src_mask, 'b m n -> (b m) n') if src_mask is not None else None
+        enc_src_mask = rearrange(src_mask, 'b m n -> (b m) n') if exists(src_mask) else None
 
         encodings, evidence_embeds = self.encoder(evidence, src_mask = enc_src_mask)
         encodings = rearrange(encodings, '(b m) n d -> b m n d', m = num_evidences)
         evidence_embeds = rearrange(evidence_embeds, '(b m) d -> b m d', m = num_evidences)
 
         similarities = einsum('bmd,bd->bm', evidence_embeds, target_embeds)
-        dec_src_mask = F.pad(src_mask, (1, 0), value = True)
-        return self.decoder(target, context = encodings, similarities = similarities, src_mask = tgt_mask[:,:-1], context_mask = dec_src_mask)
+        context_mask = F.pad(src_mask, (1, 0), value = True) if exists(src_mask) else None
+        return self.decoder(target, context = encodings, similarities = similarities, src_mask = tgt_mask[:,:-1], context_mask = context_mask)
 
 # training related classes
 
@@ -444,6 +444,8 @@ class TrainingWrapper(nn.Module):
         del doc_pointer
         del knn_writer
         self.index.reset()
+
+        print('reindexing complete')
 
     def forward(self, data):
         targets, target_masks, evidences, evidence_masks = data

@@ -74,7 +74,7 @@ for ind, ids in enumerate(dl):
     # optimizer step and all that
 
     # reindex and precompute knn every 10000 steps, as in paper
-    if ind % 10000 == 0:
+    if ind > 0 and ind % 10000 == 0:
         trainer.reindex()
 ```
 
