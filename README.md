@@ -46,7 +46,7 @@ model = Marge(
     enc_ff_mult = 4,
     dec_depth = 12,
     dec_heads = 8,
-    dec_ff_mult = 16
+    dec_ff_mult = 16                        # paper noted that decoder needs to have much bigger feed forward sizes
 )
 
 # wrap your model and your documents
@@ -55,10 +55,11 @@ trainer = TrainingWrapper(
     model,
     num_documents = NUM_DOCS,
     doc_seq_len = SEQ_LEN,
-    num_evidence = 4,
-    reindex_batch_size = 32,
-    documents_memmap_path = './train.dat',
-    masks_memmap_path = './train.mask.dat'
+    num_evidence = 4,                         # number of evidence documents to fetch per target document to construct
+    reindex_batch_size = 32,                  # batch size to use when reindexing
+    documents_memmap_path = './train.dat',    # path to the mem-mapped documents
+    masks_memmap_path = './train.mask.dat',   # if None is supplied, will assume all tokens are visible
+    use_faiss_ann = True                      # set this to false if you have a low number of documents, and approximate nearest neighbor is not needed
 )
 
 # instantiate dataloader

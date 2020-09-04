@@ -1,14 +1,15 @@
-
 import faiss
-import torch
 import math
+import numpy as np
 from tqdm import tqdm
+from einops import rearrange
+from functools import partial
+
+import torch
 from torch.utils.data import Dataset, DataLoader
 from torch import nn, einsum
 import torch.nn.functional as F
 
-import numpy as np
-from einops import rearrange
 
 from marge_pytorch.autoregressive_wrapper import AutoregressiveWrapper
 
@@ -290,6 +291,17 @@ class Marge(nn.Module):
 
 # training related classes
 
+def remove_target_from_evidence(evidence_ids, target_ids):
+    b, n = evidence_ids.shape
+
+    match_mask = evidence_ids == target_ids[:, None]
+    rows_without_matches = (match_mask.sum(axis=-1) == 0)[:, None]
+    remove_mask = np.concatenate((np.full((b, n - 1), False), rows_without_matches), axis=1)
+
+    mask = match_mask + remove_mask
+    filtered_ids = evidence_ids[~mask]
+    return filtered_ids.reshape(b, n - 1)
+
 class DocumentDataset(Dataset):
     def __init__(self, num_docs, doc_seq_len, num_evidences, documents_path, masks_path):
         super().__init__()
@@ -318,16 +330,34 @@ class DocumentDataset(Dataset):
         evidence_masks = torch.from_numpy(self.masks[evidence_ids, :]) if exists(self.masks) else torch.ones_like(evidence_data).bool()
         return target_data.cuda(), target_masks.cuda(), evidence_data.cuda(), evidence_masks.cuda()
 
-def remove_target_from_evidence(evidence_ids, target_ids):
-    b, n = evidence_ids.shape
+class FaissANN():
+    def __init__(
+        self,
+        dim,
+        num_documents,
+        num_subvectors = 16,
+        hnsw_m = 32,
+        nbits = 8
+    ):
+        super().__init__()
+        nlist = math.floor(math.sqrt(num_documents))
+        quantizer = faiss.IndexHNSWFlat(dim, hnsw_m)
+        index = faiss.IndexIVFPQ(quantizer, dim, nlist, num_subvectors, nbits)
+        self.index = faiss.index_cpu_to_all_gpus(index)
+        self.num_training = max(nlist * 10, 256)
 
-    match_mask = evidence_ids == target_ids[:, None]
-    rows_without_matches = (match_mask.sum(axis=-1) == 0)[:, None]
-    remove_mask = np.concatenate((np.full((b, n - 1), False), rows_without_matches), axis=1)
+    def reset(self):
+        return self.index.reset()
 
-    mask = match_mask + remove_mask
-    filtered_ids = evidence_ids[~mask]
-    return filtered_ids.reshape(b, n - 1)
+    def train(self, x):
+        return self.index.train(x)
+
+    def add(self, x):
+        return self.index.add(x)
+
+    def search(self, x, topk, nprobe=8):
+        self.index.nprobe = nprobe
+        return self.index.search(x, k=topk)
 
 class TrainingWrapper(nn.Module):
     def __init__(
@@ -339,7 +369,8 @@ class TrainingWrapper(nn.Module):
         documents_memmap_path,
         masks_memmap_path = None,
         num_evidence = 4,
-        reindex_batch_size = 4
+        reindex_batch_size = 4,
+        use_faiss_ann = False
     ):
         super().__init__()
         self.dim = model.dim
@@ -351,7 +382,13 @@ class TrainingWrapper(nn.Module):
         self.documents_path = documents_memmap_path
         self.knn_path = f'{self.documents_path}.knn'
 
-        self.index = None
+        self.use_faiss_ann = use_faiss_ann
+        if use_faiss_ann:
+            self.index = FaissANN(self.dim, self.num_docs)
+        else:
+            index = faiss.IndexFlatL2(self.dim)
+            self.index = faiss.index_cpu_to_all_gpus(index)
+
         self.reindex_batch_size = reindex_batch_size
         self.reindex()
 
@@ -372,28 +409,32 @@ class TrainingWrapper(nn.Module):
     def reindex(self):
         batch_size = self.reindex_batch_size
 
-        if exists(self.index):
-            self.index.reset()
-        else:
-            self.index = faiss.IndexFlatL2(self.dim)
-            self.index = faiss.index_cpu_to_all_gpus(self.index)
+        def get_embeds(data):
+            embeds = self.model.get_embeds(data, batch_size = batch_size)
+            return embeds.detach().cpu().numpy()
 
         doc_pointer = np.memmap(self.documents_path, dtype=np.int32, shape=self.doc_shape)
+
+        if self.use_faiss_ann:
+            random_indices = np.random.permutation(self.num_docs)[:self.index.num_training]
+            np_data = torch.from_numpy(doc_pointer[random_indices]).cuda().long()
+            train_embeds = get_embeds(np_data)
+            self.index.train(train_embeds)
 
         total_chunks = math.ceil(self.num_docs / batch_size)
 
         for data_slice in tqdm(chunk(self.num_docs, batch_size), total=total_chunks, desc='Adding embedding to indexes'):
             np_data = torch.from_numpy(doc_pointer[data_slice, :]).cuda().long()
-            embeds = self.model.get_embeds(np_data, batch_size = batch_size)
-            self.index.add(embeds.detach().cpu().numpy())
+            embeds = get_embeds(np_data)
+            self.index.add(embeds)
 
         knn_writer = np.memmap(self.knn_path, dtype=np.int32, shape=(self.num_docs, self.num_evidence), mode='w+')
 
         for data_slice in tqdm(chunk(self.num_docs, batch_size), total=total_chunks, desc='Fetching and storing nearest neighbors'):
             np_data = torch.from_numpy(doc_pointer[data_slice, :]).cuda().long()
 
-            embeds = self.model.get_embeds(np_data, batch_size = batch_size)
-            _, evidence_ids = self.index.search(embeds.detach().cpu().numpy(), k = self.num_evidence + 1)
+            embeds = get_embeds(np_data)
+            _, evidence_ids = self.index.search(embeds, self.num_evidence + 1)
 
             target_ids = np.arange(data_slice.start, data_slice.stop)
             evidence_ids = remove_target_from_evidence(evidence_ids, target_ids)
@@ -402,6 +443,7 @@ class TrainingWrapper(nn.Module):
 
         del doc_pointer
         del knn_writer
+        self.index.reset()
 
     def forward(self, data):
         targets, target_masks, evidences, evidence_masks = data
