@@ -1,5 +1,8 @@
+
 import faiss
 import torch
+import math
+from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 from torch import nn, einsum
 import torch.nn.functional as F
@@ -377,14 +380,16 @@ class TrainingWrapper(nn.Module):
 
         doc_pointer = np.memmap(self.documents_path, dtype=np.int32, shape=self.doc_shape)
 
-        for data_slice in chunk(self.num_docs, batch_size):
+        total_chunks = math.ceil(self.num_docs / batch_size)
+
+        for data_slice in tqdm(chunk(self.num_docs, batch_size), total=total_chunks, desc='Adding embedding to indexes'):
             np_data = torch.from_numpy(doc_pointer[data_slice, :]).cuda().long()
             embeds = self.model.get_embeds(np_data, batch_size = batch_size)
             self.index.add(embeds.detach().cpu().numpy())
 
         knn_writer = np.memmap(self.knn_path, dtype=np.int32, shape=(self.num_docs, self.num_evidence), mode='w+')
 
-        for data_slice in chunk(self.num_docs, batch_size):
+        for data_slice in tqdm(chunk(self.num_docs, batch_size), total=total_chunks, desc='Fetching and storing nearest neighbors'):
             np_data = torch.from_numpy(doc_pointer[data_slice, :]).cuda().long()
 
             embeds = self.model.get_embeds(np_data, batch_size = batch_size)
