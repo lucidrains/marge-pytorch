@@ -68,13 +68,13 @@ dl = DataLoader(trainer.dataset, batch_size=16)
 
 # now you can train, and use the reindex method on the training wrapper at appropriate intervals
 
-for ind, ids in enumerate(dl):
-    loss = trainer(ids)
+for ind, data in enumerate(dl):
+    loss = trainer(data)
     loss.backward()
     # optimizer step and all that
 
     # reindex and precompute knn every 10000 steps, as in paper
-    if ind % 10000 == 0:
+    if ind > 0 and ind % 10000 == 0:
         trainer.reindex()
 ```
 
@@ -91,17 +91,17 @@ You can sample from the decoder with the following instructions
 ```python
 # some random evidence from the dataset
 # or provide your own in the dimensions (b x num_evidences x seq_len)
-*_, evidences, _ = trainer.dataset[0:1]
+*_, evidence, mask = trainer.dataset[0:1]
 
 # assume 1 is start token
 prime = torch.tensor([[1.]]).long().cuda()
 
 # supply your own document similarities array (b x num_evidences)
 # if not supplied, will default to 1. for all evidence
-doc_similarities = torch.ones(evidences.shape[:2]).float().cuda()
+doc_similarities = torch.ones(evidence.shape[:2]).float().cuda()
 
 # generate sample of length 1024
-samples = model.generate(prime, 1024, evidences, similarities = doc_similarities)
+samples = model.generate(prime, 1024, evidence, mask = mask, similarities = doc_similarities)
 ```
 
 ## Citations
