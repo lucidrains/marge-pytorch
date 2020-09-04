@@ -17,6 +17,11 @@ def identity(x, *args, **kwargs):
 def exists(x):
     return x is not None
 
+def chunk(chunks, l):
+    for lo in range(0, l, chunks):
+        hi = min(l, lo + chunks)
+        yield slice(lo, hi)
+
 # helper classes
 
 class PreNorm(nn.Module):
@@ -372,23 +377,20 @@ class TrainingWrapper(nn.Module):
 
         doc_pointer = np.memmap(self.documents_path, dtype=np.int32, shape=self.doc_shape)
 
-        for ind in range(0, self.num_docs, batch_size):
-            data_slice = slice(ind, min(ind + batch_size, self.num_docs))
+        for data_slice in chunk(self.num_docs, batch_size):
             np_data = torch.from_numpy(doc_pointer[data_slice, :]).cuda().long()
             embeds = self.model.get_embeds(np_data, batch_size = batch_size)
             self.index.add(embeds.detach().cpu().numpy())
 
         knn_writer = np.memmap(self.knn_path, dtype=np.int32, shape=(self.num_docs, self.num_evidence), mode='w+')
 
-        for ind in range(0, self.num_docs, batch_size):
-            lo, hi = ind, min(ind + batch_size, self.num_docs)
-            data_slice = slice(lo, hi)
+        for data_slice in chunk(self.num_docs, batch_size):
             np_data = torch.from_numpy(doc_pointer[data_slice, :]).cuda().long()
 
             embeds = self.model.get_embeds(np_data, batch_size = batch_size)
             _, evidence_ids = self.index.search(embeds.detach().cpu().numpy(), k = self.num_evidence + 1)
 
-            target_ids = np.arange(lo, hi)
+            target_ids = np.arange(data_slice.start, data_slice.stop)
             evidence_ids = remove_target_from_evidence(evidence_ids, target_ids)
 
             knn_writer[data_slice, :] = evidence_ids

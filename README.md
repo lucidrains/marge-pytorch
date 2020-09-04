@@ -85,7 +85,7 @@ torch.save(model, f'./trained-model.pt')
 
 ## Sampling
 
-You can sample from the decoder with the following instructoins
+You can sample from the decoder with the following instructions
 
 ```python
 # some random evidence from the dataset
