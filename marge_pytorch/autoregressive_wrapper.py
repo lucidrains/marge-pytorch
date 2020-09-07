@@ -8,6 +8,9 @@ from torch.nn.utils.rnn import pad_sequence
 def default(value, default):
     return value if value is not None else default
 
+def log(t, eps=1e-9):
+    return torch.log(t + eps)
+
 def top_p(logits, thres = 0.9):
     sorted_logits, sorted_indices = torch.sort(logits, descending=True)
     cum_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
@@ -58,10 +61,9 @@ class AutoregressiveWrapper(nn.Module):
             logits = self.net(x, src_mask=input_mask, **kwargs)
             logits = logits[:, -1, :]
             filtered_logits = filter_logits_fn(logits, thres = filter_thres)
-            gumbel_noise = -torch.log(-torch.log(torch.zeros_like(filtered_logits).uniform_(0, 1) + 1e-9) + 1e-9)
-            sample = ((filtered_logits / temperature) + gumbel_noise).argmax(dim=-1)
 
-            # sample = torch.multinomial(probs, 1)
+            gumbel_noise = -log(-log(torch.zeros_like(filtered_logits).uniform_(0, 1)))
+            sample = ((filtered_logits / temperature) + gumbel_noise).argmax(dim=-1)
 
             out = torch.cat((out, sample[:, None]), dim=-1)
             input_mask = F.pad(input_mask, (1, 0), value=True)
@@ -79,12 +81,7 @@ class AutoregressiveWrapper(nn.Module):
     def forward(self, x, *args, **kwargs):
         pad = partial(pad_sequence, batch_first = True, padding_value = self.pad_value)
         m = kwargs.pop('input_mask', None)
-
-        if isinstance(x, torch.Tensor):
-            xi, xo = x[:, :-1], x[:, 1:]
-        else:
-            xi = pad(list(map(lambda t: t[:-1], x)))
-            xo = pad(list(map(lambda t: t[1:], x)))
+        xi, xo = x[:, :-1], x[:, 1:]
 
         if m is not None:
             assert m.shape == x.shape[0:2], 'input mask must be the same shape as the input of the auto-regressive wrapper to automatically handle'
