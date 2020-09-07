@@ -248,7 +248,10 @@ class Marge(nn.Module):
         self.dim = dim
 
         self.encoder = TransformerWrapper(num_tokens, dim, max_seq_len, Encoder(dim, depth = enc_depth, heads = enc_heads, ff_mult = enc_ff_mult))
-        self.decoder = AutoregressiveWrapper(TransformerWrapper(num_tokens, dim, max_seq_len, Decoder(dim, depth = dec_depth, heads = dec_heads, ff_mult = dec_ff_mult), return_logits = True))
+        self.decoder = TransformerWrapper(num_tokens, dim, max_seq_len, Decoder(dim, depth = dec_depth, heads = dec_heads, ff_mult = dec_ff_mult), return_logits = True)
+        self.encoder.token_emb = self.decoder.token_emb
+
+        self.decoder = AutoregressiveWrapper(self.decoder)
 
     def get_embeds(self, documents, batch_size = 16, masks = None):
         embeds = []
