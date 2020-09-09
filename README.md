@@ -1,6 +1,6 @@
 <img src="./marge.png" width="600px"></img>
 
-## Marge - Pre-training via Paraphrasing (wip)
+## Marge - Pre-training via Paraphrasing
 
 Implementation of <a href="https://arxiv.org/abs/2006.15020">Marge</a>, Pre-training via Paraphrasing, in Pytorch. It is an alternative to masked language modeling pretraining, where an encoder / decoder attention network learns to reconstruct a target document from a collection of evidence documents.
 
