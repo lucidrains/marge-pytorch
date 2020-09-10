@@ -46,11 +46,12 @@ class Residual(nn.Module):
         return self.fn(x, *args, **kwargs) + x
 
 class FeedForward(nn.Module):
-    def __init__(self, dim, mult = 4):
+    def __init__(self, dim, mult = 4, dropout = 0.):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(dim, dim * mult),
             nn.GELU(),
+            nn.Dropout(dropout),
             nn.Linear(dim * mult, dim)
         )
 
@@ -58,13 +59,14 @@ class FeedForward(nn.Module):
         return self.net(x)
 
 class SelfAttention(nn.Module):
-    def __init__(self, dim, heads = 8, causal = True):
+    def __init__(self, dim, heads = 8, causal = True, dropout = 0.):
         super().__init__()
         self.scale = dim ** -0.5
         self.heads = heads
         self.causal = causal
         self.to_qkv = nn.Linear(dim, dim * 3, bias = False)
         self.to_out = nn.Linear(dim, dim)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, mask = None):
         _, n, _, h, device = *x.shape, self.heads, x.device
@@ -83,13 +85,14 @@ class SelfAttention(nn.Module):
             del causal_mask
 
         attn = dots.softmax(dim=-1)
+        attn = self.dropout(attn)
         out = einsum('bhij,bhjd->bhid', attn, v)
         out = rearrange(out, 'b h n d -> b n (h d)')
         out = self.to_out(out)
         return out
 
 class CrossAttention(nn.Module):
-    def __init__(self, dim, heads = 8):
+    def __init__(self, dim, heads = 8, dropout = 0.):
         super().__init__()
         self.scale = dim ** -0.5
         self.heads = heads
@@ -98,6 +101,7 @@ class CrossAttention(nn.Module):
         self.to_kv = nn.Linear(dim, dim * 2, bias = False)
         self.beta = nn.Parameter(torch.tensor(1.), requires_grad=True)
         self.to_out = nn.Linear(dim, dim)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, context, doc_similarities, mask = None, context_mask = None):
         b, n, _, h, device = *x.shape, self.heads, x.device
@@ -131,18 +135,19 @@ class CrossAttention(nn.Module):
             del cross_mask
 
         attn = dots.softmax(dim=-1)
+        attn = self.dropout(attn)
         out = einsum('bhij,bhjd->bhid', attn, v)
         out = rearrange(out, 'b h n d -> b n (h d)')
         out = self.to_out(out)
         return out
 
 class Encoder(nn.Module):
-    def __init__(self, dim, depth, retrieval_encoder_depth = 4, heads = 8, ff_mult = 4):
+    def __init__(self, dim, depth, retrieval_encoder_depth = 4, heads = 8, ff_mult = 4, attn_dropout = 0., ff_dropout = 0.):
         super().__init__()
         assert depth > retrieval_encoder_depth, f'Depth must be at least the depth set for the retrieval encoder ({retrieval_encoder_depth})'
 
         block = lambda: nn.ModuleList([
-            Residual(PreNorm(dim, SelfAttention(dim))),
+            Residual(PreNorm(dim, SelfAttention(dim, dropout = attn_dropout))),
             Residual(PreNorm(dim, FeedForward(dim, mult = ff_mult)))
         ])
 
@@ -180,22 +185,22 @@ class Encoder(nn.Module):
         return x, cls_tokens
 
 class Decoder(nn.Module):
-    def __init__(self, dim, depth, head_depth = 4, heads = 8, ff_mult = 4):
+    def __init__(self, dim, depth, head_depth = 4, heads = 8, ff_mult = 4, attn_dropout = 0., ff_dropout = 0.):
         super().__init__()
         self.decoder_head = nn.ModuleList([])
         self.decoder_tail = nn.ModuleList([])
 
         for _ in range(head_depth):
             self.decoder_head.append(nn.ModuleList([
-                Residual(PreNorm(dim, SelfAttention(dim, causal = True))),
+                Residual(PreNorm(dim, SelfAttention(dim, causal = True, dropout = attn_dropout))),
                 Residual(PreNorm(dim, FeedForward(dim)))
             ]))
 
         for _ in range(depth - head_depth):
             self.decoder_tail.append(nn.ModuleList([
-                Residual(PreNorm(dim, SelfAttention(dim, causal = True))),
+                Residual(PreNorm(dim, SelfAttention(dim, causal = True, dropout = attn_dropout))),
                 Residual(PreNorm(dim, FeedForward(dim))),
-                Residual(PreNorm(dim, CrossAttention(dim))),
+                Residual(PreNorm(dim, CrossAttention(dim, dropout = attn_dropout))),
                 Residual(PreNorm(dim, FeedForward(dim, mult = ff_mult)))
             ]))
 
@@ -240,15 +245,19 @@ class Marge(nn.Module):
         enc_depth = 12,
         enc_heads = 8,
         enc_ff_mult = 4,
+        enc_attn_dropout = 0.,
+        enc_ff_dropout = 0.,
         dec_depth = 12,
         dec_heads = 8,
-        dec_ff_mult = 16
+        dec_ff_mult = 16,
+        dec_attn_dropout = 0.,
+        dec_ff_dropout = 0.
     ):
         super().__init__()
         self.dim = dim
 
-        self.encoder = TransformerWrapper(num_tokens, dim, max_seq_len, Encoder(dim, depth = enc_depth, heads = enc_heads, ff_mult = enc_ff_mult))
-        self.decoder = TransformerWrapper(num_tokens, dim, max_seq_len, Decoder(dim, depth = dec_depth, heads = dec_heads, ff_mult = dec_ff_mult), return_logits = True)
+        self.encoder = TransformerWrapper(num_tokens, dim, max_seq_len, Encoder(dim, depth = enc_depth, heads = enc_heads, ff_mult = enc_ff_mult, attn_dropout = enc_attn_dropout, ff_dropout = enc_ff_dropout))
+        self.decoder = TransformerWrapper(num_tokens, dim, max_seq_len, Decoder(dim, depth = dec_depth, heads = dec_heads, ff_mult = dec_ff_mult, attn_dropout = dec_attn_dropout, ff_dropout = dec_ff_dropout), return_logits = True)
         self.encoder.token_emb = self.decoder.token_emb
 
         self.decoder = AutoregressiveWrapper(self.decoder)
