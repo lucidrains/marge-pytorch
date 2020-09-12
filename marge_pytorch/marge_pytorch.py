@@ -2,7 +2,7 @@ import faiss
 import math
 import numpy as np
 from tqdm import tqdm
-from einops import rearrange
+from einops import rearrange, repeat
 from functools import partial
 
 import torch
@@ -113,7 +113,7 @@ class CrossAttention(nn.Module):
         context = rearrange(context, 'b m n d -> b (m n) d')
         context_mask = rearrange(context_mask, 'b m n -> b (m n)') if exists(context_mask) else None
 
-        doc_similarities = doc_similarities.unsqueeze(-1).expand(-1, -1, context_len)
+        doc_similarities = repeat(doc_similarities, 'b m -> b m n', n=context_len)
         doc_similarities = rearrange(doc_similarities, 'b m n -> b (m n)')
         doc_similarities = doc_similarities[:, None, None, :] * self.beta
 
@@ -151,7 +151,7 @@ class Encoder(nn.Module):
             Residual(PreNorm(dim, FeedForward(dim, mult = ff_mult)))
         ])
 
-        self.cls = nn.Parameter(torch.zeros(1, 1, dim), requires_grad=True)
+        self.cls = nn.Parameter(torch.zeros(1, dim), requires_grad=True)
         self.encoder_head = nn.ModuleList([])
         self.encoder_tail = nn.ModuleList([])
 
@@ -165,7 +165,7 @@ class Encoder(nn.Module):
         b, _, _ = x.shape
 
         # append cls token
-        cls_token = self.cls.expand(b, -1, -1)
+        cls_token = repeat(self.cls, 'n d -> b n d', b=b)
         x = torch.cat((cls_token, x), dim=1)
         src_mask = F.pad(src_mask, (1, 0), value=True) if src_mask is not None else None
 

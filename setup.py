@@ -16,7 +16,7 @@ setup(
     'pre-training'
   ],
   install_requires=[
-    'einops',
+    'einops>=0.3',
     'faiss-gpu',
     'numpy',
     'torch==1.6',
