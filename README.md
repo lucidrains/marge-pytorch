@@ -116,3 +116,14 @@ samples = model.generate(prime, 1024, evidence, mask = mask, similarities = doc_
     primaryClass={cs.CL}
 }
 ```
+
+```bibtex
+@misc{komatsuzaki2020current,
+    title={Current Limitations of Language Models: What You Need is Retrieval},
+    author={Aran Komatsuzaki},
+    year={2020},
+    eprint={2009.06857},
+    archivePrefix={arXiv},
+    primaryClass={cs.CL}
+}
+```
