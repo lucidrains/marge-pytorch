@@ -21,18 +21,19 @@ from marge_pytorch import Marge, TrainingWrapper
 
 # your documents must be tokenized and stored as memmap in the shape (num documents, seq length)
 
-# mock constants
+# constants
 NUM_DOCS = 10000
 SEQ_LEN = 1024
+SHAPE = (NUM_DOCS, SEQ_LEN)
 
 # generate mock training data
-f = np.memmap('./train.dat', dtype=np.int32, mode='w+', shape=(NUM_DOCS, SEQ_LEN))
-f[:, :] = np.random.rand(NUM_DOCS, SEQ_LEN)
+f = np.memmap('./train.dat', dtype=np.int32, mode='w+', shape=SHAPE)
+f[:] = np.random.rand(*SHAPE)
 del f
 
 # generate mock masking data
-f = np.memmap('./train.mask.dat', dtype=np.bool, mode='w+', shape=(NUM_DOCS, SEQ_LEN))
-f[:, :] = np.full((NUM_DOCS, SEQ_LEN), True)
+f = np.memmap('./train.mask.dat', dtype=np.bool, mode='w+', shape=SHAPE)
+f[:] = np.full(SHAPE, True)
 del f
 
 # instantiate model
