@@ -21,9 +21,9 @@ def identity(x, *args, **kwargs):
 def exists(x):
     return x is not None
 
-def chunk(chunks, l):
-    for lo in range(0, l, chunks):
-        hi = min(l, lo + chunks)
+def chunk(chunk_size, l):
+    for lo in range(0, l, chunk_size):
+        hi = min(l, lo + chunk_size)
         yield slice(lo, hi)
 
 # helper classes
@@ -147,7 +147,7 @@ class Encoder(nn.Module):
         assert depth > retrieval_encoder_depth, f'Depth must be at least the depth set for the retrieval encoder ({retrieval_encoder_depth})'
 
         block = lambda: nn.ModuleList([
-            Residual(PreNorm(dim, SelfAttention(dim, dropout = attn_dropout))),
+            Residual(PreNorm(dim, SelfAttention(dim, causal=False, dropout = attn_dropout))),
             Residual(PreNorm(dim, FeedForward(dim, mult = ff_mult)))
         ])
 
@@ -174,7 +174,7 @@ class Encoder(nn.Module):
             x = ff(x)
 
         cls_tokens = x[:, 0]
-
+        
         if return_embed_only:
             return cls_tokens
 
@@ -292,7 +292,6 @@ class Marge(nn.Module):
         num_evidences = evidence.shape[1]
         evidence = rearrange(evidence, 'b m n -> (b m) n')
         enc_src_mask = rearrange(src_mask, 'b m n -> (b m) n') if exists(src_mask) else None
-
         encodings, evidence_embeds = self.encoder(evidence, src_mask = enc_src_mask)
         encodings = rearrange(encodings, '(b m) n d -> b m n d', m = num_evidences)
         evidence_embeds = rearrange(evidence_embeds, '(b m) d -> b m d', m = num_evidences)
@@ -435,14 +434,14 @@ class TrainingWrapper(nn.Module):
 
         total_chunks = math.ceil(self.num_docs / batch_size)
 
-        for data_slice in tqdm(chunk(self.num_docs, batch_size), total=total_chunks, desc='Adding embedding to indexes'):
+        for data_slice in tqdm(chunk(batch_size, self.num_docs), total=total_chunks, desc='Adding embedding to indexes'):
             np_data = torch.from_numpy(doc_pointer[data_slice, :]).cuda().long()
             embeds = get_embeds(np_data)
             self.index.add(embeds)
 
         knn_writer = np.memmap(self.knn_path, dtype=np.int32, shape=(self.num_docs, self.num_evidence), mode='w+')
 
-        for data_slice in tqdm(chunk(self.num_docs, batch_size), total=total_chunks, desc='Fetching and storing nearest neighbors'):
+        for data_slice in tqdm(chunk(batch_size, self.num_docs), total=total_chunks, desc='Fetching and storing nearest neighbors'):
             np_data = torch.from_numpy(doc_pointer[data_slice, :]).cuda().long()
 
             embeds = get_embeds(np_data)

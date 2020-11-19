@@ -28,7 +28,7 @@ SHAPE = (NUM_DOCS, SEQ_LEN)
 
 # generate mock training data
 f = np.memmap('./train.dat', dtype=np.int32, mode='w+', shape=SHAPE)
-f[:] = np.random.rand(*SHAPE)
+f[:] = np.random.randint(0, 20000, size=SHAPE)
 del f
 
 # generate mock masking data
