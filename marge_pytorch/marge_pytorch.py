@@ -26,6 +26,9 @@ def chunk(chunk_size, l):
         hi = min(l, lo + chunk_size)
         yield slice(lo, hi)
 
+def max_neg_value(tensor):
+    return -torch.finfo(tensor.dtype).max
+
 # helper classes
 
 class PreNorm(nn.Module):
@@ -74,14 +77,16 @@ class SelfAttention(nn.Module):
         q, k, v = rearrange(qkv, 'b n (qkv h d) -> qkv b h n d', h = h, qkv = 3)
         dots = einsum('bhid,bhjd->bhij', q, k) * self.scale
 
+        mask_value = max_neg_value(dots)
+
         if exists(mask):
             mask = mask[:, None, :, None] * mask[:, None, None, :]
-            dots.masked_fill_(~mask, float('-inf'))
+            dots.masked_fill_(~mask, mask_value)
             del mask
 
         if self.causal:
             causal_mask = torch.ones(n, n, device=device).triu_(1).bool()
-            dots.masked_fill_(causal_mask, float('-inf'))
+            dots.masked_fill_(causal_mask, mask_value)
             del causal_mask
 
         attn = dots.softmax(dim=-1)
@@ -131,7 +136,8 @@ class CrossAttention(nn.Module):
                 context_mask = torch.full(context.shape[:2], True, dtype=torch.bool, device=device)
 
             cross_mask = mask[:, None, :, None] * context_mask[:, None, None, :]
-            dots.masked_fill_(~cross_mask, float('-inf'))
+            mask_value = max_neg_value(dots)
+            dots.masked_fill_(~cross_mask, mask_value)
             del cross_mask
 
         attn = dots.softmax(dim=-1)
