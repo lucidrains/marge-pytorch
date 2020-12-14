@@ -4,6 +4,8 @@
 
 Implementation of <a href="https://arxiv.org/abs/2006.15020">Marge</a>, Pre-training via Paraphrasing, in Pytorch. It is an alternative to masked language modeling pretraining, where an encoder / decoder attention network learns to reconstruct a target document from a collection of evidence documents.
 
+Update - It seems like a <a href="https://github.com/lucidrains/distilled-retriever-pytorch">new winning approach</a> has emerged, kind of the inverse of what Marge does. People have had trouble replicating Marge, so perhaps it is time to jump ships to this new approach
+
 ## Install
 
 ```bash
