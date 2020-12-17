@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
   name = 'marge-pytorch',
   packages = find_packages(),
-  version = '0.0.8',
+  version = '0.0.9',
   license='MIT',
   description = 'Marge - Pytorch',
   author = 'Phil Wang',
@@ -19,7 +19,7 @@ setup(
     'einops>=0.3',
     'faiss-gpu',
     'numpy',
-    'torch==1.6',
+    'torch>=1.6',
     'tqdm'
   ],
   classifiers=[
