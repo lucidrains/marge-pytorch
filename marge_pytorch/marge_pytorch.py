@@ -10,7 +10,6 @@ from torch.utils.data import Dataset, DataLoader
 from torch import nn, einsum
 import torch.nn.functional as F
 
-
 from marge_pytorch.autoregressive_wrapper import AutoregressiveWrapper
 
 # helpers
@@ -173,7 +172,7 @@ class Encoder(nn.Module):
         # append cls token
         cls_token = repeat(self.cls, 'n d -> b n d', b=b)
         x = torch.cat((cls_token, x), dim=1)
-        src_mask = F.pad(src_mask, (1, 0), value=True) if src_mask is not None else None
+        src_mask = F.pad(src_mask, (1, 0), value=True) if not exists(src_mask) else None
 
         for attn, ff in self.encoder_head:
             x = attn(x, mask = src_mask)
@@ -272,7 +271,7 @@ class Marge(nn.Module):
         embeds = []
 
         batched_documents = documents.split(batch_size)
-        batched_masks = masks.split(batch_size) if masks is not None else ([None] * len(batched_documents))
+        batched_masks = masks.split(batch_size) if not exists(masks) else ([None] * len(batched_documents))
 
         for docs, mask in zip(batched_documents, batched_masks):
             embed = self.encoder(docs, src_mask = mask, return_embed_only = True)
