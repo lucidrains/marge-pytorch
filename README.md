@@ -43,6 +43,7 @@ model = Marge(
     num_tokens = 20000,
     max_seq_len = SEQ_LEN,
     enc_depth = 12,
+    enc_retrieval_depth = 4,                # defaults to 4 as in paper (take the CLS token after the 4th layer of the encoder)
     enc_heads = 8,
     enc_ff_mult = 4,
     dec_depth = 12,

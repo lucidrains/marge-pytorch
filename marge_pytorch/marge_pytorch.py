@@ -147,9 +147,9 @@ class CrossAttention(nn.Module):
         return out
 
 class Encoder(nn.Module):
-    def __init__(self, dim, depth, retrieval_encoder_depth = 4, heads = 8, ff_mult = 4, attn_dropout = 0., ff_dropout = 0.):
+    def __init__(self, dim, depth, retrieval_depth = 4, heads = 8, ff_mult = 4, attn_dropout = 0., ff_dropout = 0.):
         super().__init__()
-        assert depth > retrieval_encoder_depth, f'Depth must be at least the depth set for the retrieval encoder ({retrieval_encoder_depth})'
+        assert depth > retrieval_depth, f'Depth must be at least the depth set for the retrieval encoder ({retrieval_depth})'
 
         block = lambda: nn.ModuleList([
             Residual(PreNorm(dim, SelfAttention(dim, causal=False, dropout = attn_dropout))),
@@ -160,10 +160,10 @@ class Encoder(nn.Module):
         self.encoder_head = nn.ModuleList([])
         self.encoder_tail = nn.ModuleList([])
 
-        for _ in range(retrieval_encoder_depth):
+        for _ in range(retrieval_depth):
             self.encoder_head.append(block())
 
-        for _ in range(depth - retrieval_encoder_depth):
+        for _ in range(depth - retrieval_depth):
             self.encoder_tail.append(block())
 
     def forward(self, x, src_mask = None, return_embed_only = False):
@@ -248,6 +248,7 @@ class Marge(nn.Module):
         num_tokens = 20000,
         max_seq_len = 1024,
         enc_depth = 12,
+        enc_retrieval_depth = 4,
         enc_heads = 8,
         enc_ff_mult = 4,
         enc_attn_dropout = 0.,
@@ -261,7 +262,7 @@ class Marge(nn.Module):
         super().__init__()
         self.dim = dim
 
-        self.encoder = TransformerWrapper(num_tokens, dim, max_seq_len, Encoder(dim, depth = enc_depth, heads = enc_heads, ff_mult = enc_ff_mult, attn_dropout = enc_attn_dropout, ff_dropout = enc_ff_dropout))
+        self.encoder = TransformerWrapper(num_tokens, dim, max_seq_len, Encoder(dim, depth = enc_depth, retrieval_depth = enc_retrieval_depth, heads = enc_heads, ff_mult = enc_ff_mult, attn_dropout = enc_attn_dropout, ff_dropout = enc_ff_dropout))
         self.decoder = TransformerWrapper(num_tokens, dim, max_seq_len, Decoder(dim, depth = dec_depth, heads = dec_heads, ff_mult = dec_ff_mult, attn_dropout = dec_attn_dropout, ff_dropout = dec_ff_dropout), return_logits = True)
         self.encoder.token_emb = self.decoder.token_emb
 
