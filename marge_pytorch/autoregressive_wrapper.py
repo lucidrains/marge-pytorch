@@ -58,7 +58,7 @@ class AutoregressiveWrapper(nn.Module):
         for _ in range(seq_len):
             x = out[:, -self.max_seq_len:]
             input_mask = input_mask[:, -self.max_seq_len:]
-            logits = self.net(x, src_mask=input_mask, **kwargs)
+            logits, *_ = self.net(x, src_mask=input_mask, **kwargs)
             logits = logits[:, -1, :]
             filtered_logits = filter_logits_fn(logits, thres = filter_thres)
 
@@ -87,6 +87,6 @@ class AutoregressiveWrapper(nn.Module):
             assert m.shape == x.shape[0:2], 'input mask must be the same shape as the input of the auto-regressive wrapper to automatically handle'
             kwargs.update(input_mask = m[:, :-1])
 
-        out = self.net(xi, *args, **kwargs)
+        out, *rest = self.net(xi, *args, **kwargs)
         loss = F.cross_entropy(out.transpose(1, 2), xo, ignore_index = self.ignore_index)
-        return loss
+        return (loss, *rest)

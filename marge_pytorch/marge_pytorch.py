@@ -28,6 +28,23 @@ def chunk(chunk_size, l):
 def max_neg_value(tensor):
     return -torch.finfo(tensor.dtype).max
 
+# attention distillation loss
+
+def distill_attn_loss(evi_dots, doc_similarities, mask  = None):
+    evi_dots = rearrange(evi_dots, 'b l h i n j -> b (l h i) n j')
+
+    if exists(mask):
+        mask = rearrange(mask, 'b j -> b () () j')
+        evi_dots.masked_fill_(~mask, 0.)
+
+    evi_dots = evi_dots.mean(dim = (1, -1))
+    evi_dots = evi_dots.softmax(dim = -1)
+    evi_dots.detach_()
+
+    doc_similarities = doc_similarities.softmax(dim = -1).log()
+    loss = F.kl_div(doc_similarities, evi_dots, reduction = 'batchmean')
+    return loss
+
 # helper classes
 
 class PreNorm(nn.Module):
@@ -39,13 +56,6 @@ class PreNorm(nn.Module):
     def forward(self, x, *args, **kwargs):
         x = self.norm(x)
         return self.fn(x, *args, **kwargs)
-
-class Residual(nn.Module):
-    def __init__(self, fn):
-        super().__init__()
-        self.fn = fn
-    def forward(self, x, *args, **kwargs):
-        return self.fn(x, *args, **kwargs) + x
 
 class GEGLU(nn.Module):
     def forward(self, x):
@@ -133,6 +143,8 @@ class CrossAttention(nn.Module):
         k, v = rearrange(kv, 'b n (kv h d) -> kv b h n d', h = h, kv = 2)
 
         dots = einsum('bhid,bhjd->bhij', q, k) * self.scale
+        pre_attn_dots = dots
+
         dots = dots + doc_similarities
 
         if any(map(exists, (mask, context_mask))):
@@ -149,10 +161,12 @@ class CrossAttention(nn.Module):
 
         attn = dots.softmax(dim=-1)
         attn = self.dropout(attn)
+
         out = einsum('bhij,bhjd->bhid', attn, v)
         out = rearrange(out, 'b h n d -> b n (h d)')
         out = self.to_out(out)
-        return out
+
+        return out, pre_attn_dots
 
 class Encoder(nn.Module):
     def __init__(self, dim, depth, retrieval_depth = 4, heads = 8, ff_mult = 4, attn_dropout = 0., ff_dropout = 0.):
@@ -160,8 +174,8 @@ class Encoder(nn.Module):
         assert depth > retrieval_depth, f'Depth must be at least the depth set for the retrieval encoder ({retrieval_depth})'
 
         block = lambda: nn.ModuleList([
-            Residual(PreNorm(dim, SelfAttention(dim, causal=False, dropout = attn_dropout))),
-            Residual(PreNorm(dim, FeedForward(dim, mult = ff_mult)))
+            PreNorm(dim, SelfAttention(dim, causal=False, dropout = attn_dropout)),
+            PreNorm(dim, FeedForward(dim, mult = ff_mult))
         ])
 
         self.cls = nn.Parameter(torch.zeros(1, dim), requires_grad=True)
@@ -183,17 +197,17 @@ class Encoder(nn.Module):
         src_mask = F.pad(src_mask, (1, 0), value=True) if exists(src_mask) else None
 
         for attn, ff in self.encoder_head:
-            x = attn(x, mask = src_mask)
-            x = ff(x)
+            x = attn(x, mask = src_mask) + x
+            x = ff(x) + x
 
         cls_tokens = x[:, 0]
         
         if return_embed_only:
-            return cls_tokens
+            return cls_tokens, None
 
         for attn, ff in self.encoder_tail:
-            x = attn(x, mask = src_mask)
-            x = ff(x)
+            x = attn(x, mask = src_mask) + x
+            x = ff(x) + x
 
         return x[:, 1:], cls_tokens
 
@@ -205,30 +219,37 @@ class Decoder(nn.Module):
 
         for _ in range(head_depth):
             self.decoder_head.append(nn.ModuleList([
-                Residual(PreNorm(dim, SelfAttention(dim, causal = True, dropout = attn_dropout))),
-                Residual(PreNorm(dim, FeedForward(dim)))
+                PreNorm(dim, SelfAttention(dim, causal = True, dropout = attn_dropout)),
+                PreNorm(dim, FeedForward(dim))
             ]))
 
         for _ in range(depth - head_depth):
             self.decoder_tail.append(nn.ModuleList([
-                Residual(PreNorm(dim, SelfAttention(dim, causal = True, dropout = attn_dropout))),
-                Residual(PreNorm(dim, FeedForward(dim))),
-                Residual(PreNorm(dim, CrossAttention(dim, dropout = attn_dropout))),
-                Residual(PreNorm(dim, FeedForward(dim, mult = ff_mult)))
+                PreNorm(dim, SelfAttention(dim, causal = True, dropout = attn_dropout)),
+                PreNorm(dim, FeedForward(dim)),
+                PreNorm(dim, CrossAttention(dim, dropout = attn_dropout)),
+                PreNorm(dim, FeedForward(dim, mult = ff_mult))
             ]))
 
     def forward(self, x, *, context, similarities, src_mask = None, context_mask = None):
         for self_attn, self_ff in self.decoder_head:
-            x = self_attn(x, mask = src_mask)
-            x = self_ff(x)
+            x = self_attn(x, mask = src_mask) + x
+            x = self_ff(x) + x
+
+        cross_pre_attns = []
 
         for self_attn, self_ff, cross_attn, cross_ff in self.decoder_tail:
-            x = self_attn(x, mask = src_mask)
-            x = self_ff(x)
-            x = cross_attn(x, context, similarities, mask = src_mask, context_mask = context_mask)
-            x = cross_ff(x)
+            x = self_attn(x, mask = src_mask) + x
+            x = self_ff(x) + x
 
-        return x
+            x_out, attn = cross_attn(x, context, similarities, mask = src_mask, context_mask = context_mask)
+            x = x_out + x
+
+            x = cross_ff(x) + x
+
+            cross_pre_attns.append(attn)
+
+        return x, cross_pre_attns
 
 class TransformerWrapper(nn.Module):
     def __init__(self, num_tokens, dim, max_seq_len, layers, return_logits = False):
@@ -246,8 +267,8 @@ class TransformerWrapper(nn.Module):
         x = self.token_emb(x)
         x += self.pos_emb(torch.arange(n, device=device))
 
-        x = self.layers(x, *args, **kwargs)
-        return self.to_logits(x)
+        x, *out = self.layers(x, *args, **kwargs)
+        return (self.to_logits(x), *out)
 
 class Marge(nn.Module):
     def __init__(
@@ -265,7 +286,9 @@ class Marge(nn.Module):
         dec_heads = 8,
         dec_ff_mult = 16,
         dec_attn_dropout = 0.,
-        dec_ff_dropout = 0.
+        dec_ff_dropout = 0.,
+        distill_attn = False,
+        distill_loss_coef = 1.
     ):
         super().__init__()
         self.dim = dim
@@ -276,6 +299,10 @@ class Marge(nn.Module):
 
         self.decoder = AutoregressiveWrapper(self.decoder)
 
+        # experimental attn distillation settings
+        self.distill_attn = distill_attn
+        self.distill_loss_coef = distill_loss_coef
+
     def get_embeds(self, documents, batch_size = 16, masks = None):
         embeds = []
 
@@ -283,7 +310,7 @@ class Marge(nn.Module):
         batched_masks = masks.split(batch_size) if exists(masks) else ([None] * len(batched_documents))
 
         for docs, mask in zip(batched_documents, batched_masks):
-            embed = self.encoder(docs, src_mask = mask, return_embed_only = True)
+            embed, *_ = self.encoder(docs, src_mask = mask, return_embed_only = True)
             embeds.append(embed)
 
         embeds = torch.cat(embeds)
@@ -313,7 +340,16 @@ class Marge(nn.Module):
         similarities = einsum('bmd,bd->bm', evidence_embeds, target_embeds)
 
         dec_src_mask = tgt_mask[:, :-1] if exists(tgt_mask) else None
-        return self.decoder(target, context = encodings, similarities = similarities, src_mask = dec_src_mask, context_mask = src_mask)
+        loss, cross_attns = self.decoder(target, context = encodings, similarities = similarities, src_mask = dec_src_mask, context_mask = src_mask)
+
+        if self.distill_attn:
+            cross_attns = torch.stack(cross_attns, dim = 1)
+            cross_attns = rearrange(cross_attns, 'b l h i (n j) -> b l h i n j', n = num_evidences)
+            distill_loss = distill_attn_loss(cross_attns, similarities, mask = src_mask)
+            aux_loss = self.distill_loss_coef * distill_loss
+            loss = loss + aux_loss
+
+        return loss
 
 # training related classes
 

@@ -48,8 +48,10 @@ model = Marge(
     enc_ff_mult = 4,
     dec_depth = 12,
     dec_heads = 8,
-    dec_ff_mult = 16                        # paper noted that decoder needs to have much bigger feed forward sizes
-)
+    dec_ff_mult = 16,                       # paper noted that decoder needs to have much bigger feed forward sizes
+    distill_attn = False,                   # (experimental) will add, on top of the decoder loss, an auxiliary distillation loss as defined in https://arxiv.org/abs/2012.04584
+    distill_loss_coef = 1.                  # weight of distillation auxilliary loss         
+ )
 
 # wrap your model and your documents
 
@@ -125,6 +127,17 @@ samples = model.generate(prime, 1024, evidence, mask = mask, similarities = doc_
     author={Aran Komatsuzaki},
     year={2020},
     eprint={2009.06857},
+    archivePrefix={arXiv},
+    primaryClass={cs.CL}
+}
+```
+
+```bibtex
+@misc{izacard2020distilling,
+    title={Distilling Knowledge from Reader to Retriever for Question Answering},
+    author={Gautier Izacard and Edouard Grave},
+    year={2020},
+    eprint={2012.04584},
     archivePrefix={arXiv},
     primaryClass={cs.CL}
 }
