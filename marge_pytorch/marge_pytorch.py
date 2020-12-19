@@ -47,12 +47,20 @@ class Residual(nn.Module):
     def forward(self, x, *args, **kwargs):
         return self.fn(x, *args, **kwargs) + x
 
+class GEGLU(nn.Module):
+    def forward(self, x):
+        x, gates = x.chunk(2, dim = -1)
+        return F.gelu(gates) * x
+
 class FeedForward(nn.Module):
     def __init__(self, dim, mult = 4, dropout = 0.):
         super().__init__()
+        # to keep the number of parameters / computation constant with respect to non-GLU variant
+        mult = int(mult / 3 * 2)
+
         self.net = nn.Sequential(
-            nn.Linear(dim, dim * mult),
-            nn.GELU(),
+            nn.Linear(dim, dim * mult * 2),
+            GEGLU(),
             nn.Dropout(dropout),
             nn.Linear(dim * mult, dim)
         )
@@ -172,7 +180,7 @@ class Encoder(nn.Module):
         # append cls token
         cls_token = repeat(self.cls, 'n d -> b n d', b=b)
         x = torch.cat((cls_token, x), dim=1)
-        src_mask = F.pad(src_mask, (1, 0), value=True) if not exists(src_mask) else None
+        src_mask = F.pad(src_mask, (1, 0), value=True) if exists(src_mask) else None
 
         for attn, ff in self.encoder_head:
             x = attn(x, mask = src_mask)
@@ -187,7 +195,7 @@ class Encoder(nn.Module):
             x = attn(x, mask = src_mask)
             x = ff(x)
 
-        return x, cls_tokens
+        return x[:, 1:], cls_tokens
 
 class Decoder(nn.Module):
     def __init__(self, dim, depth, head_depth = 4, heads = 8, ff_mult = 4, attn_dropout = 0., ff_dropout = 0.):
@@ -272,7 +280,7 @@ class Marge(nn.Module):
         embeds = []
 
         batched_documents = documents.split(batch_size)
-        batched_masks = masks.split(batch_size) if not exists(masks) else ([None] * len(batched_documents))
+        batched_masks = masks.split(batch_size) if exists(masks) else ([None] * len(batched_documents))
 
         for docs, mask in zip(batched_documents, batched_masks):
             embed = self.encoder(docs, src_mask = mask, return_embed_only = True)
@@ -303,8 +311,9 @@ class Marge(nn.Module):
         evidence_embeds = rearrange(evidence_embeds, '(b m) d -> b m d', m = num_evidences)
 
         similarities = einsum('bmd,bd->bm', evidence_embeds, target_embeds)
-        context_mask = F.pad(src_mask, (1, 0), value = True) if exists(src_mask) else None
-        return self.decoder(target, context = encodings, similarities = similarities, src_mask = tgt_mask[:,:-1], context_mask = context_mask)
+
+        dec_src_mask = tgt_mask[:, :-1] if exists(tgt_mask) else None
+        return self.decoder(target, context = encodings, similarities = similarities, src_mask = dec_src_mask, context_mask = src_mask)
 
 # training related classes
 
