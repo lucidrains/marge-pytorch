@@ -34,15 +34,18 @@ def distill_attn_loss(evi_dots, doc_similarities, mask  = None):
     evi_dots = rearrange(evi_dots, 'b l h i n j -> b (l h i) n j')
 
     if exists(mask):
-        mask = rearrange(mask, 'b j -> b () () j')
+        mask = rearrange(mask, 'b n j -> b () n j')
         evi_dots.masked_fill_(~mask, 0.)
+        denom = mask.expand_as(evi_dots).sum(dim = (1, -1))
+        evi_dots_mean = evi_dots.sum(dim = (1, -1)) / denom
+    else:
+        evi_dots_mean = evi_dots.mean(dim = (1, -1))
 
-    evi_dots = evi_dots.mean(dim = (1, -1))
-    evi_dots = evi_dots.softmax(dim = -1)
-    evi_dots.detach_()
+    normed_evi_dots = evi_dots_mean.softmax(dim = -1)
+    normed_evi_dots.detach_()
 
     doc_similarities = doc_similarities.softmax(dim = -1).log()
-    loss = F.kl_div(doc_similarities, evi_dots, reduction = 'batchmean')
+    loss = F.kl_div(doc_similarities, normed_evi_dots, reduction = 'batchmean')
     return loss
 
 # helper classes
