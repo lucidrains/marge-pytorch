@@ -30,14 +30,14 @@ def max_neg_value(tensor):
 
 # attention distillation loss
 
-def distill_attn_loss(evi_dots, doc_similarities, mask  = None):
+def distill_attn_loss(evi_dots, doc_similarities, mask  = None, eps = 1e-5):
     evi_dots = rearrange(evi_dots, 'b l h i n j -> b (l h i) n j')
 
     if exists(mask):
         mask = rearrange(mask, 'b n j -> b () n j')
         evi_dots.masked_fill_(~mask, 0.)
         denom = mask.expand_as(evi_dots).sum(dim = (1, -1))
-        evi_dots_mean = evi_dots.sum(dim = (1, -1)) / denom
+        evi_dots_mean = evi_dots.sum(dim = (1, -1)) / (denom + eps)
     else:
         evi_dots_mean = evi_dots.mean(dim = (1, -1))
 
