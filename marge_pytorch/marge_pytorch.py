@@ -4,6 +4,7 @@ import numpy as np
 from tqdm import tqdm
 from einops import rearrange, repeat
 from functools import partial
+from contextlib import contextmanager
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -27,6 +28,12 @@ def chunk(chunk_size, l):
 
 def max_neg_value(tensor):
     return -torch.finfo(tensor.dtype).max
+
+@contextmanager
+def memmap(*args, **kwargs):
+    pointer = np.memmap(*args, **kwargs)
+    yield pointer
+    del pointer
 
 # attention distillation loss
 
@@ -478,36 +485,32 @@ class TrainingWrapper(nn.Module):
             embeds = self.model.get_embeds(data, batch_size = batch_size)
             return embeds.detach().cpu().numpy()
 
-        doc_pointer = np.memmap(self.documents_path, dtype=np.int32, shape=self.doc_shape)
+        with memmap(self.documents_path, dtype=np.int32, shape=self.doc_shape) as (doc_pointer
+            ), memmap(self.knn_path, dtype=np.int32, shape=(self.num_docs, self.num_evidence), mode='w+') as knn_writer:
+            if self.use_faiss_ann:
+                random_indices = np.random.permutation(self.num_docs)[:self.index.num_training]
+                np_data = torch.from_numpy(doc_pointer[random_indices]).cuda().long()
+                train_embeds = get_embeds(np_data)
+                self.index.train(train_embeds)
 
-        if self.use_faiss_ann:
-            random_indices = np.random.permutation(self.num_docs)[:self.index.num_training]
-            np_data = torch.from_numpy(doc_pointer[random_indices]).cuda().long()
-            train_embeds = get_embeds(np_data)
-            self.index.train(train_embeds)
+            total_chunks = math.ceil(self.num_docs / batch_size)
 
-        total_chunks = math.ceil(self.num_docs / batch_size)
+            for data_slice in tqdm(chunk(batch_size, self.num_docs), total=total_chunks, desc='Adding embedding to indexes'):
+                np_data = torch.from_numpy(doc_pointer[data_slice, :]).cuda().long()
+                embeds = get_embeds(np_data)
+                self.index.add(embeds)
 
-        for data_slice in tqdm(chunk(batch_size, self.num_docs), total=total_chunks, desc='Adding embedding to indexes'):
-            np_data = torch.from_numpy(doc_pointer[data_slice, :]).cuda().long()
-            embeds = get_embeds(np_data)
-            self.index.add(embeds)
+            for data_slice in tqdm(chunk(batch_size, self.num_docs), total=total_chunks, desc='Fetching and storing nearest neighbors'):
+                np_data = torch.from_numpy(doc_pointer[data_slice, :]).cuda().long()
 
-        knn_writer = np.memmap(self.knn_path, dtype=np.int32, shape=(self.num_docs, self.num_evidence), mode='w+')
+                embeds = get_embeds(np_data)
+                _, evidence_ids = self.index.search(embeds, self.num_evidence + 1)
 
-        for data_slice in tqdm(chunk(batch_size, self.num_docs), total=total_chunks, desc='Fetching and storing nearest neighbors'):
-            np_data = torch.from_numpy(doc_pointer[data_slice, :]).cuda().long()
+                target_ids = np.arange(data_slice.start, data_slice.stop)
+                evidence_ids = remove_target_from_evidence(evidence_ids, target_ids)
 
-            embeds = get_embeds(np_data)
-            _, evidence_ids = self.index.search(embeds, self.num_evidence + 1)
+                knn_writer[data_slice, :] = evidence_ids
 
-            target_ids = np.arange(data_slice.start, data_slice.stop)
-            evidence_ids = remove_target_from_evidence(evidence_ids, target_ids)
-
-            knn_writer[data_slice, :] = evidence_ids
-
-        del doc_pointer
-        del knn_writer
         self.index.reset()
 
         print('reindexing complete')
