@@ -103,9 +103,9 @@ trainer = TrainingWrapper(
     reindex_batch_size = 32,
     documents_memmap_path = './evidence.dat',
     masks_memmap_path = './evidence.mask.dat',
-    num_targets = NUM_TARGETS,                       # number of target documents, with sequence length the same as the document (evidence)
-    target_memmap_path = './target.dat',             # path to target memmap, same as documents (evidence)
-    target_masks_memmap_path = './target.mask.dat',  # path to target mask memmap, same as document masks (evidence) [optional]
+    num_targets = NUM_TARGETS,                       # 1. number of target documents, with sequence length the same as the document (evidence)
+    target_memmap_path = './target.dat',             # 2. path to target memmap, same as documents (evidence)
+    target_masks_memmap_path = './target.mask.dat',  # 3. path to target mask memmap, same as document masks (evidence)
     use_faiss_ann = True
 )
 ```

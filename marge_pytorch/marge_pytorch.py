@@ -468,8 +468,14 @@ class TrainingWrapper(nn.Module):
 
         self.documents_path = documents_memmap_path
         self.separate_target_and_evidence = exists(target_memmap_path)
-        self.target_path = default(target_memmap_path, documents_memmap_path)
 
+        if self.separate_target_and_evidence:
+            assert exists(num_targets), 'number of target documents must be defined if target document set is different than evidence document set'
+        else:
+            target_memmap_path = default(target_memmap_path, documents_memmap_path)
+            target_masks_memmap_path = default(target_masks_memmap_path, masks_memmap_path)
+
+        self.target_path = target_memmap_path
         self.knn_path = f'{self.documents_path}.knn'
 
         self.use_faiss_ann = use_faiss_ann
@@ -489,8 +495,8 @@ class TrainingWrapper(nn.Module):
             documents_memmap_path,
             masks_memmap_path,
             num_targets,
-            default(target_memmap_path, documents_memmap_path),
-            default(target_masks_memmap_path, masks_memmap_path)
+            target_memmap_path,
+            target_masks_memmap_path
         )
 
         self.dataset.set_knn_path(self.knn_path)
