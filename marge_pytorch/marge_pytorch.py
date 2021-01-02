@@ -21,6 +21,9 @@ def identity(x, *args, **kwargs):
 def exists(x):
     return x is not None
 
+def default(x, d):
+    return x if exists(x) else d
+
 def chunk(chunk_size, l):
     for lo in range(0, l, chunk_size):
         hi = min(l, lo + chunk_size)
@@ -375,12 +378,14 @@ def remove_target_from_evidence(evidence_ids, target_ids):
     return filtered_ids.reshape(b, n - 1)
 
 class DocumentDataset(Dataset):
-    def __init__(self, num_docs, doc_seq_len, num_evidences, documents_path, masks_path):
+    def __init__(self, num_docs, doc_seq_len, num_evidences, documents_path, masks_path, target_path, target_masks_path):
         super().__init__()
         self.shape = (num_docs, doc_seq_len)
         self.knn_shape = (num_docs, num_evidences)
         self.documents = np.memmap(documents_path, dtype=np.int32, shape=self.shape)
+        self.targets = np.memmap(target_path, dtype=np.int32, shape=self.shape)
         self.masks = np.memmap(masks_path, dtype=np.bool, shape=self.shape) if exists(masks_path) else None
+        self.target_masks = np.memmap(target_masks_path, dtype=np.bool, shape=self.shape) if exists(target_masks_path) else None
         self.knn = None
 
     def set_knn_path(self, path):
@@ -394,8 +399,8 @@ class DocumentDataset(Dataset):
     def __getitem__(self, ind):
         assert exists(self.knn), 'The memmap path to the generated k nearest neighbors for evidences must be set for the dataset'
 
-        target_data = torch.from_numpy(self.documents[ind, :]).long()
-        target_masks = torch.from_numpy(self.masks[ind, :]) if exists(self.masks) else torch.ones_like(target_data).bool()
+        target_data = torch.from_numpy(self.targets[ind, :]).long()
+        target_masks = torch.from_numpy(self.target_masks[ind, :]) if exists(self.target_masks) else torch.ones_like(target_data).bool()
 
         evidence_ids = self.knn[ind, :]
         evidence_data = torch.from_numpy(self.documents[evidence_ids, :]).long()
@@ -440,6 +445,9 @@ class TrainingWrapper(nn.Module):
         doc_seq_len,
         documents_memmap_path,
         masks_memmap_path = None,
+        num_targets = None,
+        target_memmap_path = None,
+        target_masks_memmap_path = None,
         num_evidence = 4,
         reindex_batch_size = 4,
         use_faiss_ann = False
@@ -450,8 +458,15 @@ class TrainingWrapper(nn.Module):
 
         self.model = model.cuda()
         self.num_docs = num_documents
+        self.num_targets = default(num_targets, num_documents)
+
         self.doc_shape = (num_documents, doc_seq_len)
+        self.target_shape = (self.num_targets, doc_seq_len)
+
         self.documents_path = documents_memmap_path
+        self.separate_target_and_evidence = exists(target_memmap_path)
+        self.target_path = default(target_memmap_path, documents_memmap_path)
+
         self.knn_path = f'{self.documents_path}.knn'
 
         self.use_faiss_ann = use_faiss_ann
@@ -469,7 +484,9 @@ class TrainingWrapper(nn.Module):
             doc_seq_len,
             num_evidence,
             documents_memmap_path,
-            masks_memmap_path
+            masks_memmap_path,
+            default(target_memmap_path, documents_memmap_path),
+            default(target_masks_memmap_path, masks_memmap_path)
         )
 
         self.dataset.set_knn_path(self.knn_path)
@@ -486,7 +503,9 @@ class TrainingWrapper(nn.Module):
             return embeds.detach().cpu().numpy()
 
         with memmap(self.documents_path, dtype=np.int32, shape=self.doc_shape) as (doc_pointer
+            ), memmap(self.target_path, dtype=np.int32, shape=self.target_shape) as (target_pointer
             ), memmap(self.knn_path, dtype=np.int32, shape=(self.num_docs, self.num_evidence), mode='w+') as knn_writer:
+
             if self.use_faiss_ann:
                 random_indices = np.random.permutation(self.num_docs)[:self.index.num_training]
                 np_data = torch.from_numpy(doc_pointer[random_indices]).cuda().long()
@@ -500,14 +519,17 @@ class TrainingWrapper(nn.Module):
                 embeds = get_embeds(np_data)
                 self.index.add(embeds)
 
-            for data_slice in tqdm(chunk(batch_size, self.num_docs), total=total_chunks, desc='Fetching and storing nearest neighbors'):
-                np_data = torch.from_numpy(doc_pointer[data_slice, :]).cuda().long()
+            for data_slice in tqdm(chunk(batch_size, self.num_targets), total=total_chunks, desc='Fetching and storing nearest neighbors'):
+                np_data = torch.from_numpy(target_pointer[data_slice, :]).cuda().long()
 
                 embeds = get_embeds(np_data)
-                _, evidence_ids = self.index.search(embeds, self.num_evidence + 1)
+                fetch_num_evidences = self.num_evidence + (0 if self.separate_target_and_evidence else 1)
+                _, evidence_ids = self.index.search(embeds, fetch_num_evidences)
 
                 target_ids = np.arange(data_slice.start, data_slice.stop)
-                evidence_ids = remove_target_from_evidence(evidence_ids, target_ids)
+
+                if not self.separate_target_and_evidence:
+                    evidence_ids = remove_target_from_evidence(evidence_ids, target_ids)
 
                 knn_writer[data_slice, :] = evidence_ids
 
