@@ -378,14 +378,15 @@ def remove_target_from_evidence(evidence_ids, target_ids):
     return filtered_ids.reshape(b, n - 1)
 
 class DocumentDataset(Dataset):
-    def __init__(self, num_docs, doc_seq_len, num_evidences, documents_path, masks_path, target_path, target_masks_path):
+    def __init__(self, num_docs, doc_seq_len, num_evidences, documents_path, masks_path, num_targets, target_path, target_masks_path):
         super().__init__()
         self.shape = (num_docs, doc_seq_len)
-        self.knn_shape = (num_docs, num_evidences)
+        self.target_shape = (num_targets, doc_seq_len)
+        self.knn_shape = (num_targets, num_evidences)
         self.documents = np.memmap(documents_path, dtype=np.int32, shape=self.shape)
-        self.targets = np.memmap(target_path, dtype=np.int32, shape=self.shape)
+        self.targets = np.memmap(target_path, dtype=np.int32, shape=self.target_shape)
         self.masks = np.memmap(masks_path, dtype=np.bool, shape=self.shape) if exists(masks_path) else None
-        self.target_masks = np.memmap(target_masks_path, dtype=np.bool, shape=self.shape) if exists(target_masks_path) else None
+        self.target_masks = np.memmap(target_masks_path, dtype=np.bool, shape=self.target_shape) if exists(target_masks_path) else None
         self.knn = None
 
     def set_knn_path(self, path):
@@ -458,10 +459,12 @@ class TrainingWrapper(nn.Module):
 
         self.model = model.cuda()
         self.num_docs = num_documents
-        self.num_targets = default(num_targets, num_documents)
+
+        num_targets = default(num_targets, num_documents)
+        self.num_targets = num_targets
 
         self.doc_shape = (num_documents, doc_seq_len)
-        self.target_shape = (self.num_targets, doc_seq_len)
+        self.target_shape = (num_targets, doc_seq_len)
 
         self.documents_path = documents_memmap_path
         self.separate_target_and_evidence = exists(target_memmap_path)
@@ -485,6 +488,7 @@ class TrainingWrapper(nn.Module):
             num_evidence,
             documents_memmap_path,
             masks_memmap_path,
+            num_targets,
             default(target_memmap_path, documents_memmap_path),
             default(target_masks_memmap_path, masks_memmap_path)
         )
