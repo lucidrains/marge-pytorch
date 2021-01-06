@@ -276,6 +276,7 @@ class TransformerWrapper(nn.Module):
 
     def forward(self, x, *args, **kwargs):
         b, n, device = *x.shape, x.device
+        assert n <= self.max_seq_len, f'your sequence length {n} needs to be less than or equal to the max sequence length {self.max_seq_len}'
 
         x = self.token_emb(x)
         x += self.pos_emb(torch.arange(n, device=device))
