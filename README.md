@@ -92,7 +92,7 @@ torch.save(model, f'./trained-model.pt')
 
 ## Advanced
 
-If you would like the target and evidence documents to be from different sets, you just have to pass in up to three additional keyword arguments, as shown below.
+If you would like the target and evidence documents to be from different sets, you just have to pass in up to four additional keyword arguments, as shown below.
 
 ```python
 trainer = TrainingWrapper(
@@ -104,8 +104,9 @@ trainer = TrainingWrapper(
     documents_memmap_path = './evidence.dat',
     masks_memmap_path = './evidence.mask.dat',
     num_targets = NUM_TARGETS,                       # 1. number of target documents, with sequence length the same as the document (evidence)
-    target_memmap_path = './target.dat',             # 2. path to target memmap, same as documents (evidence)
-    target_masks_memmap_path = './target.mask.dat',  # 3. path to target mask memmap, same as document masks (evidence)
+    target_seq_len = SEQ_LEN,                        # 2. sequence length of target documents
+    target_memmap_path = './target.dat',             # 3. path to target memmap, same as documents (evidence)
+    target_masks_memmap_path = './target.mask.dat',  # 4. path to target mask memmap, same as document masks (evidence)
     use_faiss_ann = True
 )
 ```

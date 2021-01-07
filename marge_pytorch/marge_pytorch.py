@@ -379,10 +379,10 @@ def remove_target_from_evidence(evidence_ids, target_ids):
     return filtered_ids.reshape(b, n - 1)
 
 class DocumentDataset(Dataset):
-    def __init__(self, num_docs, doc_seq_len, num_evidences, documents_path, masks_path, num_targets, target_path, target_masks_path):
+    def __init__(self, num_docs, doc_seq_len, num_evidences, documents_path, masks_path, num_targets, target_seq_len, target_path, target_masks_path):
         super().__init__()
         self.shape = (num_docs, doc_seq_len)
-        self.target_shape = (num_targets, doc_seq_len)
+        self.target_shape = (num_targets, target_seq_len)
         self.knn_shape = (num_targets, num_evidences)
         self.documents = np.memmap(documents_path, dtype=np.int32, shape=self.shape)
         self.targets = np.memmap(target_path, dtype=np.int32, shape=self.target_shape)
@@ -448,6 +448,7 @@ class TrainingWrapper(nn.Module):
         documents_memmap_path,
         masks_memmap_path = None,
         num_targets = None,
+        target_seq_len = None,
         target_memmap_path = None,
         target_masks_memmap_path = None,
         num_evidence = 4,
@@ -465,17 +466,19 @@ class TrainingWrapper(nn.Module):
         self.num_targets = num_targets
 
         self.doc_shape = (num_documents, doc_seq_len)
-        self.target_shape = (num_targets, doc_seq_len)
 
         self.documents_path = documents_memmap_path
         self.separate_target_and_evidence = exists(target_memmap_path)
 
         if self.separate_target_and_evidence:
             assert exists(num_targets), 'number of target documents must be defined if target document set is different than evidence document set'
+            assert exists(target_seq_len), 'target sequence length must be specified'
         else:
             target_memmap_path = default(target_memmap_path, documents_memmap_path)
             target_masks_memmap_path = default(target_masks_memmap_path, masks_memmap_path)
+            target_seq_len = default(target_seq_len, doc_seq_len)
 
+        self.target_shape = (num_targets, doc_seq_len)
         self.target_path = target_memmap_path
         self.knn_path = f'{self.documents_path}.knn'
 
@@ -496,6 +499,7 @@ class TrainingWrapper(nn.Module):
             documents_memmap_path,
             masks_memmap_path,
             num_targets,
+            target_seq_len,
             target_memmap_path,
             target_masks_memmap_path
         )
@@ -521,21 +525,21 @@ class TrainingWrapper(nn.Module):
                 random_indices = np.random.permutation(self.num_docs)[:self.index.num_training]
                 np_data = torch.from_numpy(doc_pointer[random_indices]).cuda().long()
                 train_embeds = get_embeds(np_data)
-                self.index.train(train_embeds.float())
+                self.index.train(train_embeds)
 
             total_chunks = math.ceil(self.num_docs / batch_size)
 
             for data_slice in tqdm(chunk(batch_size, self.num_docs), total=total_chunks, desc='Adding embedding to indexes'):
                 np_data = torch.from_numpy(doc_pointer[data_slice, :]).cuda().long()
                 embeds = get_embeds(np_data)
-                self.index.add(embeds.float())
+                self.index.add(embeds)
 
             for data_slice in tqdm(chunk(batch_size, self.num_targets), total=total_chunks, desc='Fetching and storing nearest neighbors'):
                 np_data = torch.from_numpy(target_pointer[data_slice, :]).cuda().long()
 
                 embeds = get_embeds(np_data)
                 fetch_num_evidences = self.num_evidence + (0 if self.separate_target_and_evidence else 1)
-                _, evidence_ids = self.index.search(embeds.float(), fetch_num_evidences)
+                _, evidence_ids = self.index.search(embeds, fetch_num_evidences)
 
                 target_ids = np.arange(data_slice.start, data_slice.stop)
 
