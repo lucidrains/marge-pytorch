@@ -527,14 +527,16 @@ class TrainingWrapper(nn.Module):
                 train_embeds = get_embeds(np_data)
                 self.index.train(train_embeds)
 
-            total_chunks = math.ceil(self.num_docs / batch_size)
+            total_evidence_chunks = math.ceil(self.num_docs / batch_size)
 
-            for data_slice in tqdm(chunk(batch_size, self.num_docs), total=total_chunks, desc='Adding embedding to indexes'):
+            for data_slice in tqdm(chunk(batch_size, self.num_docs), total=total_evidence_chunks, desc='Adding embedding to indexes'):
                 np_data = torch.from_numpy(doc_pointer[data_slice, :]).cuda().long()
                 embeds = get_embeds(np_data)
                 self.index.add(embeds)
 
-            for data_slice in tqdm(chunk(batch_size, self.num_targets), total=total_chunks, desc='Fetching and storing nearest neighbors'):
+            total_target_chunks = math.ceil(self.num_targets / batch_size)
+
+            for data_slice in tqdm(chunk(batch_size, self.num_targets), total=total_target_chunks, desc='Fetching and storing nearest neighbors'):
                 np_data = torch.from_numpy(target_pointer[data_slice, :]).cuda().long()
 
                 embeds = get_embeds(np_data)
