@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
   name = 'marge-pytorch',
   packages = find_packages(),
-  version = '0.2.5',
+  version = '0.2.7',
   license='MIT',
   description = 'Marge - Pytorch',
   author = 'Phil Wang',
