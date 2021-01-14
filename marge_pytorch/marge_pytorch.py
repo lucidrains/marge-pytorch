@@ -396,7 +396,7 @@ class DocumentDataset(Dataset):
         self.knn = np.memmap(path, dtype=np.int32, shape=self.knn_shape)
 
     def __len__(self):
-        return self.shape[0]
+        return self.target_shape[0]
 
     def __getitem__(self, ind):
         assert exists(self.knn), 'The memmap path to the generated k nearest neighbors for evidences must be set for the dataset'
