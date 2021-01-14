@@ -478,7 +478,7 @@ class TrainingWrapper(nn.Module):
             target_masks_memmap_path = default(target_masks_memmap_path, masks_memmap_path)
             target_seq_len = default(target_seq_len, doc_seq_len)
 
-        self.target_shape = (num_targets, doc_seq_len)
+        self.target_shape = (num_targets, target_seq_len)
         self.target_path = target_memmap_path
         self.knn_path = f'{self.documents_path}.knn'
 
